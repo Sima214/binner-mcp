@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binner-mcp"
+version = "0.1.0"
+description = "MCP server and Python API proxy for local Binner inventory management"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+license-files = ["LICENSE.txt"]
+authors = [
+    { name = "Anastasios Symeonidis" },
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "requests>=2.31.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+]
+
+[project.scripts]
+binner-mcp = "binner_mcp.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
