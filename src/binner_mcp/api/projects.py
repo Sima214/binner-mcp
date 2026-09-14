@@ -14,8 +14,8 @@ from binner_mcp.api.models import (
 )
 
 
-class ProjectsMixin:
-    """Mixin implementing Binner projects and BOM REST endpoints."""
+class ProjectsComp:
+    """Component implementing Binner projects and BOM REST endpoints."""
 
     def get_projects(
         self,

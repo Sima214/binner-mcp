@@ -1,4 +1,4 @@
-"""Binner MCP Swarm Module: REST Client & Models for https://swarm.binner.io."""
+"""Programmatic Python API client and data models for Binner Swarm cloud services (https://swarm.binner.io)."""
 
 from binner_mcp.swarmer.client import SwarmClient
 from binner_mcp.swarmer.exceptions import (

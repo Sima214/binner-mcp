@@ -3,9 +3,9 @@
 from typing import Any, Dict, List, Optional, Tuple
 
 
-class PartCacheMixin:
+class PartCacheComp:
     """
-    Mixin providing in-memory bidirectional caching (part_id <-> part_number)
+    Component providing in-memory bidirectional caching (part_id <-> part_number)
     and part identity resolution.
     """
 
@@ -80,3 +80,4 @@ class PartCacheMixin:
                 return part_id, resolved_num
 
         return part_id, part_number
+ 

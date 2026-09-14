@@ -4,12 +4,12 @@ import logging
 from typing import Any
 
 from binner_mcp.api.base import BaseBinnerClient
-from binner_mcp.api.cache import PartCacheMixin
-from binner_mcp.api.data import DataMixin
-from binner_mcp.api.part_types import PartTypesMixin
-from binner_mcp.api.parts import PartsMixin
-from binner_mcp.api.projects import ProjectsMixin
-from binner_mcp.api.system import SystemMixin
+from binner_mcp.api.cache import PartCacheComp
+from binner_mcp.api.data import DataComp
+from binner_mcp.api.part_types import PartTypesComp
+from binner_mcp.api.parts import PartsComp
+from binner_mcp.api.projects import ProjectsComp
+from binner_mcp.api.system import SystemComp
 from binner_mcp.common.logging import (
     TRACE_LEVEL_NUM,
     log_trace,
@@ -24,19 +24,19 @@ _sanitize_for_trace = sanitize_for_trace
 
 
 class BinnerAPIProxy(
-    PartCacheMixin,
-    PartsMixin,
-    PartTypesMixin,
-    ProjectsMixin,
-    SystemMixin,
-    DataMixin,
+    PartCacheComp,
+    PartsComp,
+    PartTypesComp,
+    ProjectsComp,
+    SystemComp,
+    DataComp,
     BaseBinnerClient,
 ):
     """
-    MCP-agnostic client proxy for local Binner instances.
+    Programmatic client for local Binner instances.
 
-    Manages connection pooling, cookie-bound token refreshes, and verified REST endpoints.
-    Composes domain mixins for parts inventory, caching, taxonomies, projects, BOM,
+    Manages connection pooling, cookie-bound token refreshes, and verified API endpoints.
+    Composes domain components for parts inventory, caching, taxonomies, projects, BOM,
     system diagnostics, and batch import/export operations.
     """
 

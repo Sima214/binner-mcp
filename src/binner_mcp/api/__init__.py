@@ -1,4 +1,4 @@
-"""Binner MCP Layer 1: MCP-Agnostic REST Proxy Client & Models."""
+"""Programmatic Python API client and data models for local Binner inventory instances."""
 
 from binner_mcp.api.client import BinnerAPIProxy
 from binner_mcp.api.exceptions import (

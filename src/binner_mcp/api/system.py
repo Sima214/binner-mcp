@@ -17,8 +17,8 @@ from binner_mcp.common.logging import log_trace
 logger = logging.getLogger("binner_mcp.api.client")
 
 
-class SystemMixin:
-    """Mixin implementing Binner system, diagnostic, and integration test REST endpoints."""
+class SystemComp:
+    """Component implementing Binner system, diagnostic, and integration test REST endpoints."""
 
     def get_system_version(self) -> Dict[str, Any]:
         """

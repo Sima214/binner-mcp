@@ -20,8 +20,8 @@ from binner_mcp.common.logging import log_trace
 logger = logging.getLogger("binner_mcp.api.client")
 
 
-class DataMixin:
-    """Mixin implementing Binner data export and batch ingestion REST endpoints."""
+class DataComp:
+    """Component implementing Binner data export and batch ingestion REST endpoints."""
 
     def export_data(
         self,

@@ -9,8 +9,8 @@ from binner_mcp.api.models import (
 )
 
 
-class PartTypesMixin:
-    """Mixin implementing Binner part type taxonomy REST endpoints."""
+class PartTypesComp:
+    """Component implementing Binner part type taxonomy REST endpoints."""
 
     def get_part_types(self, parent: Optional[str] = None) -> List[PartTypeResponse]:
         """

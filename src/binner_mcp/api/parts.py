@@ -17,8 +17,8 @@ from binner_mcp.api.models import (
 )
 
 
-class PartsMixin:
-    """Mixin implementing Binner parts inventory REST endpoints."""
+class PartsComp:
+    """Component implementing Binner parts inventory REST endpoints."""
 
     def get_summary(self) -> DashboardSummaryResponse:
         """Fetch inventory dashboard metrics (unique parts, total parts, total cost, low stock count)."""
