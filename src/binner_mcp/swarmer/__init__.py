@@ -1,0 +1,57 @@
+"""Binner MCP Swarm Module: REST Client & Models for https://swarm.binner.io."""
+
+from binner_mcp.swarmer.client import SwarmClient
+from binner_mcp.swarmer.exceptions import (
+    SwarmAPIError,
+    SwarmConnectionError,
+    SwarmError,
+    SwarmRateLimitError,
+    SwarmTimeoutError,
+)
+from binner_mcp.swarmer.models import (
+    Circuit,
+    CircuitPartAssignment,
+    DatasheetBasic,
+    DatasheetSource,
+    PartNumber,
+    PartNumberManufacturer,
+    PartNumberManufacturerPackage,
+    PartNumberManufacturerParametric,
+    PartNumberManufacturerSupplier,
+    PartResults,
+    Pinout,
+    RateLimitInfo,
+    SearchPartRequest,
+    SearchPartResponse,
+    ServiceResult,
+    StatusResponse,
+    SwarmBaseModel,
+    SwarmImage,
+)
+
+__all__ = [
+    "SwarmClient",
+    "SwarmError",
+    "SwarmConnectionError",
+    "SwarmTimeoutError",
+    "SwarmRateLimitError",
+    "SwarmAPIError",
+    "SwarmBaseModel",
+    "RateLimitInfo",
+    "StatusResponse",
+    "SearchPartRequest",
+    "SwarmImage",
+    "CircuitPartAssignment",
+    "Circuit",
+    "Pinout",
+    "DatasheetBasic",
+    "PartNumberManufacturerSupplier",
+    "PartNumberManufacturerParametric",
+    "PartNumberManufacturerPackage",
+    "PartNumberManufacturer",
+    "PartNumber",
+    "SearchPartResponse",
+    "DatasheetSource",
+    "PartResults",
+    "ServiceResult",
+]

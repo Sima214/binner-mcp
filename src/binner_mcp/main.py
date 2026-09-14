@@ -6,60 +6,8 @@ import os
 import sys
 from typing import Optional
 
+from binner_mcp.common.logging import TRACE_LEVEL_NUM, setup_logging
 from binner_mcp.config import BinnerConfig, load_config
-
-# Register custom TRACE logging level (below DEBUG) for raw API calls and payloads
-TRACE_LEVEL_NUM = 5
-logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
-
-
-def trace(self: logging.Logger, message: str, *args, **kwargs) -> None:
-    """Log a message with severity 'TRACE'."""
-    if self.isEnabledFor(TRACE_LEVEL_NUM):
-        self._log(TRACE_LEVEL_NUM, message, args, **kwargs)
-
-
-logging.Logger.trace = trace  # type: ignore[attr-defined]
-
-
-def setup_logging(level: Optional[str] = None) -> logging.Logger:
-    """
-    Configure lean, protocol-safe logging.
-
-    All output is strictly directed to sys.stderr to avoid polluting
-    sys.stdout, which is reserved for MCP JSON-RPC stdio transport.
-
-    Log Levels:
-      - INFO:    App lifecycle events (server startup, shutdown, ready state)
-      - DEBUG:   Token refresh operations, state changes, loaded config path
-      - WARNING: Non-critical fallbacks, ignored or unmapped fields
-      - ERROR:   Unexpected API responses, network disconnects, auth failures
-      - TRACE:   Every raw HTTP request/response call and payload
-    """
-    log_level_name = (
-        level
-        or os.environ.get("BINNER_LOG_LEVEL")
-        or "INFO"
-    ).upper()
-
-    if log_level_name == "TRACE":
-        numeric_level = TRACE_LEVEL_NUM
-    else:
-        numeric_level = getattr(logging, log_level_name, logging.INFO)
-
-    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    date_format = "%Y-%m-%d %H:%M:%S"
-
-    handler = logging.StreamHandler(stream=sys.stderr)
-    handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(numeric_level)
-    root_logger.handlers.clear()
-    root_logger.addHandler(handler)
-
-    logger = logging.getLogger("binner_mcp")
-    return logger
 
 
 def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:

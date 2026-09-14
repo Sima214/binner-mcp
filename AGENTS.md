@@ -48,10 +48,17 @@ src/binner_mcp/
 * Binner is an ASP.NET Core application. **Never invent endpoints or parameters**. Always reference [reference/binner-mcp-design-doc.md](reference/binner-mcp-design-doc.md) and [`reference/Binner.Web/Controllers/`](reference/Binner.Web/Controllers/).
 * **Key verified facts**:
   * **Token Refresh:** Endpoint is `POST /api/authentication/refresh-token` (NOT `/api/authentication/refresh`). The server expects `Request.Cookies["refreshToken"]` and delivers the rotated token in `Set-Cookie`.
+  * **JWT Timestamp Granularity:** JWT `iat` (issued at) has 1-second Unix epoch granularity; consecutive refresh/login calls within the same second yield identical signatures.
   * **Part Lookup:** There is **no** `GET /api/part/{id}` endpoint. Part retrieval by number is `GET /api/part?partNumber=<pn>`. Multi-criteria search is `GET /api/part/search?keywords=...&exactMatch=...&shortId=...`.
   * **Part Creation:** `POST /api/part` requires `partNumber` (string). `location` is a `string` (room/shelf name), and `binNumber` / `binNumber2` are `string` labels (e.g. `"A1-04"`), **not** integer foreign keys.
   * **Part Deletion:** `DELETE /api/part` takes a JSON body `{"partId": <int>}`.
-  * **Health Check:** `GET /api/ping` returns `"pong"` without requiring authentication.
+  * **Backend Field Requirement Omissions & Semantics:**
+    * `POST /api/part/quantity`, `/increment`, and `/decrement` in `EntityFrameworkStorageProvider.cs` evaluate `.WhereIf(request.PartId > 0, x => x.PartNumber == request.PartNumber)`. Therefore, if `partId` is passed, `partNumber` **must** also be provided; otherwise Binner matches `x.PartNumber == null` and returns HTTP 404.
+    * `POST /api/part/print` in `PartController.cs` requires `partNumber` (`if (string.IsNullOrEmpty(request.PartNumber)) return BadRequest(...)`), returning HTTP 400 even if a valid `partId` is provided.
+    * `POST /api/part/quantity` applies an additive delta (`+=`), whereas `PUT /api/part` replaces absolute quantity.
+  * **Identity Claims Mapping:** `GET /api/authentication/identity` maps ASP.NET claims to `name` and `emailAddress` (never `userName` or `fullName`).
+  * **Polymorphic Schemas:** Fields such as `keywords` can arrive as a string or `ICollection<string>` (JSON array `[]`), requiring `Union[str, List[str]]` in Pydantic models.
+  * **Health Check & Local Version Extraction:** `GET /api/ping` returns `"pong"` without requiring authentication and delivers the installed Binner version in the `X-Version` response header. **Never call `GET /api/system/version`** as it triggers blocking outbound GitHub API requests subject to rate-limits and timeouts.
   * **Hardware Reality:** There are **no** WLED smart-bin locator endpoints in Binner. Hardware capabilities center around label printers (`/api/print`) and barcode generators (`/api/part/barcode`).
 
 ### Rule 3: Single Hardcoded Configuration File
@@ -80,6 +87,12 @@ src/binner_mcp/
 ### Rule 6: Git Commit Restrictions
 * **Do not execute `git commit`** unless explicitly requested by the user. You are authorized to stage files or check status, but commit creation is reserved for user review.
 
+### Rule 7: Tooling & Environment Discipline
+* **Filesystem Operations:** Use native agent filesystem tools (`list_dir`, `view_file`, `find_by_name`, `grep_search`, `write_to_file`, `replace_file_content`) instead of shell utilities (`ls`, `cat`, `find`) to avoid permission prompts and failures.
+* **Local Loopback Probing:** Use `curl` directly via `run_command` when probing local loopback (`127.0.0.1` / `localhost`) endpoints rather than browser/URL tools.
+* **Workspace Isolation:** Never pollute root `/tmp` with ad-hoc test files. Use `/tmp/binner_mcp` or repository-scoped directories.
+* **Source Code Writing:** Never pass `ArtifactMetadata` to `write_to_file` when modifying repository source files (metadata is strictly restricted to markdown artifacts in the artifact directory).
+
 ---
 
 ## 3. Technology Stack & Coding Standards
@@ -97,3 +110,5 @@ src/binner_mcp/
 * A live Binner server instance is typically active on `http://127.0.0.1:8090`.
 * Test database connectivity before full operations using `GET /api/ping`.
 * Place automated tests in `tests/` using `pytest` and `pytest-asyncio`.
+* **Test Execution Command:** Always run tests using the virtual environment: `virtenv/bin/python -m pytest tests/ -v`. Do not invoke bare `pytest`.
+

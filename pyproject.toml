@@ -8,8 +8,7 @@ version = "0.1.0"
 description = "MCP server and Python API proxy for local Binner inventory management"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-license-files = ["LICENSE.txt"]
+license = "MIT"
 authors = [
     { name = "Anastasios Symeonidis" },
 ]
@@ -22,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pytest>=8.0.0",
 ]
 
 [project.scripts]
@@ -29,3 +29,7 @@ binner-mcp = "binner_mcp.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
