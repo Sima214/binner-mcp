@@ -1,5 +1,6 @@
 """Unit tests for authentication, sessions, caching, and export in BinnerAPIProxy."""
 import io
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import zipfile
@@ -236,6 +237,44 @@ def test_models_serialization() -> None:
     assert part_resp.part_id == 42
     assert part_resp.part_number == "RES-10K-0805"
     assert part_resp.part_type == "Resistors"
+
+
+def test_models_json_serialization() -> None:
+    req = CreatePartRequest(
+        partNumber="RES-10K-0805",
+        quantity=50,
+        cost=0.05,
+        location="Lab Shelf 1",
+        binNumber="A1-02",
+        partTypeId="Resistors",
+    )
+    part_resp = PartResponse.model_validate({
+        "partId": 42,
+        "partNumber": "RES-10K-0805",
+        "quantity": 50,
+        "cost": 0.05,
+        "binNumber": "A1-02",
+        "partTypeId": 2,
+        "partType": "Resistors",
+    })
+
+    # Direct json.dumps compatibility
+    json_single = json.dumps(part_resp)
+    assert '"partNumber": "RES-10K-0805"' in json_single or '"partNumber":"RES-10K-0805"' in json_single
+    assert '"partId": 42' in json_single or '"partId":42' in json_single
+
+    # Iterables and nested structures in json.dumps
+    json_list = json.dumps([part_resp, req])
+    assert json_list.startswith("[") and json_list.endswith("]")
+
+    json_dict = json.dumps({"part": part_resp})
+    assert json_dict.startswith("{") and json_dict.endswith("}")
+
+    # Model convenience methods
+    assert "RES-10K-0805" in part_resp.to_json()
+    assert part_resp.to_dict()["partNumber"] == "RES-10K-0805"
+
+
 
 
 def test_cache_lifecycle_and_lookup(proxy: BinnerAPIProxy) -> None:
