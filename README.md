@@ -119,7 +119,7 @@ Launches the server directly as a local subprocess over `stdio`.
   "mcpServers": {
     "binner": {
       "command": "/path/to/binner_mcp/virtenv/bin/binner-mcp",
-      "env": {clients
+      "env": {
         "BINNER_BASE_URL": "http://127.0.0.1:8090",
         "BINNER_USERNAME": "admin",
         "BINNER_PASSWORD": "your-password"
