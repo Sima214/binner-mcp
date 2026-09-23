@@ -36,7 +36,7 @@ class BinnerAPIProxy(
     Programmatic client for local Binner instances.
 
     Manages connection pooling, cookie-bound token refreshes, and verified API endpoints.
-    Composes domain components for parts inventory, caching, taxonomies, projects, BOM,
+    Composes domain components for parts inventory, caching, categories, projects, BOM,
     system diagnostics, and batch import/export operations.
     """
 

@@ -1,4 +1,4 @@
-"""Part types / category taxonomy management endpoints for Binner API."""
+"""Part types / category hierarchy management endpoints for Binner API."""
 
 from typing import Any, Dict, List, Optional, Union
 
@@ -10,7 +10,7 @@ from binner_mcp.api.models import (
 
 
 class PartTypesComp:
-    """Component implementing Binner part type taxonomy REST endpoints."""
+    """Component implementing Binner part type category REST endpoints."""
 
     def get_part_types(self, parent: Optional[str] = None) -> List[PartTypeResponse]:
         """

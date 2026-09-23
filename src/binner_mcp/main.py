@@ -30,21 +30,27 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--transport",
-        choices=["stdio", "sse"],
+        choices=["stdio", "http", "sse"],
         default=None,
-        help="MCP transport protocol (stdio or sse, default: stdio)",
+        help="MCP transport protocol (stdio, http [Streamable HTTP], or sse, default: stdio)",
     )
     parser.add_argument(
         "--host",
         type=str,
         default=None,
-        help="Host address for SSE transport (default: 127.0.0.1)",
+        help="Host address for HTTP/SSE transport (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=None,
-        help="Port for SSE transport (default: 8000)",
+        help="Port for SSE transport (default: 8345)",
+    )
+    parser.add_argument(
+        "--category-delimiter",
+        type=str,
+        default=None,
+        help="Delimiter for hierarchical category paths (default: '::')",
     )
     return parser.parse_args(args)
 
@@ -58,9 +64,25 @@ def main() -> int:
         transport_override=args.transport,
         host_override=args.host,
         port_override=args.port,
+        category_delimiter_override=args.category_delimiter,
     )
     logger = setup_logging(level=config.log_level)
-    logger.info("Binner MCP Server initialized.")
+    logger.info("Starting Binner MCP Server (transport=%s)...", config.transport)
+
+    from binner_mcp.mcp.server import BinnerMCPServer
+
+    server = BinnerMCPServer(config=config)
+
+    if config.transport == "http":
+        logger.info("Listening on Streamable HTTP %s:%d...", config.host, config.port)
+        server.run_http(host=config.host, port=config.port)
+    elif config.transport == "sse":
+        logger.info("Listening on legacy SSE %s:%d...", config.host, config.port)
+        server.run_sse(host=config.host, port=config.port)
+    else:
+        logger.info("Listening on Standard I/O (stdio)...")
+        server.run_stdio()
+
     return 0
 
 

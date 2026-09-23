@@ -19,9 +19,13 @@ class BinnerConfig(BaseModel):
     username: str = Field(default="admin", description="Binner username")
     password: str = Field(default="admin", description="Binner password")
     log_level: str = Field(default="INFO", description="Logging level")
-    transport: str = Field(default="stdio", description="MCP transport mode ('stdio' or 'sse')")
-    host: str = Field(default="127.0.0.1", description="Host address for SSE transport")
-    port: int = Field(default=8000, description="Port for SSE transport")
+    transport: str = Field(default="stdio", description="MCP transport mode ('stdio', 'http', or 'sse')")
+    host: str = Field(default="127.0.0.1", description="Host address for HTTP/SSE transport")
+    port: int = Field(default=8000, description="Port for HTTP/SSE transport")
+    category_delimiter: str = Field(
+        default="::",
+        description="Delimiter for hierarchical category paths (e.g. '::' or '#')",
+    )
 
 
 def find_config_file(explicit_path: Optional[str] = None) -> Optional[Path]:
@@ -74,13 +78,14 @@ def load_config(
     transport_override: Optional[str] = None,
     host_override: Optional[str] = None,
     port_override: Optional[int] = None,
+    category_delimiter_override: Optional[str] = None,
 ) -> BinnerConfig:
     """
     Load configuration with strict precedence:
     1. Built-in defaults
     2. binnermcp_config.json (if found)
     3. Environment variables (BINNER_BASE_URL, BINNER_USERNAME, BINNER_PASSWORD, BINNER_LOG_LEVEL,
-       BINNER_MCP_TRANSPORT, BINNER_MCP_HOST, BINNER_MCP_PORT)
+       BINNER_MCP_TRANSPORT, BINNER_MCP_HOST, BINNER_MCP_PORT, BINNER_CATEGORY_DELIMITER)
     4. Explicit overrides (e.g. CLI arguments)
     """
     config_data: dict[str, Any] = {}
@@ -110,6 +115,8 @@ def load_config(
         config_data["transport"] = env_transport
     if env_host := os.environ.get("BINNER_MCP_HOST"):
         config_data["host"] = env_host
+    if env_delim := os.environ.get("BINNER_CATEGORY_DELIMITER"):
+        config_data["category_delimiter"] = env_delim
     if env_port := os.environ.get("BINNER_MCP_PORT"):
         try:
             config_data["port"] = int(env_port)
@@ -124,6 +131,8 @@ def load_config(
         config_data["host"] = host_override
     if port_override is not None:
         config_data["port"] = port_override
+    if category_delimiter_override is not None:
+        config_data["category_delimiter"] = category_delimiter_override
 
     if "log_level" in config_data and isinstance(config_data["log_level"], str):
         config_data["log_level"] = config_data["log_level"].upper()
