@@ -62,7 +62,7 @@ class DataComp:
                             except ValueError:
                                 continue
                     logger.debug("Hydrated %d parts into cache from export archive", hydrated_count)
-                except Exception as err:
+                except (csv.Error, ValueError, KeyError) as err:
                     logger.warning("Failed to populate part cache from export archive: %s", err)
 
         return archive

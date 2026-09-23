@@ -1,10 +1,12 @@
 """Synchronous implementation for inventory discovery, batched inspection, and mutation MCP tools."""
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Set
 import requests
 
 from binner_mcp.api.client import BinnerAPIProxy
+from binner_mcp.api.exceptions import BinnerError
 from binner_mcp.mcp.normalization import compact_payload, generate_change_diff
 
 logger = logging.getLogger("binner_mcp.mcp.tools.inventory")
@@ -287,6 +289,7 @@ def save_parts_sync(
         # --- Mutation Phase (Reached only if 100% of pre-flight checks pass) ---
         created_list: List[Dict[str, Any]] = []
         updated_list: List[Dict[str, Any]] = []
+        failed_list: List[Dict[str, Any]] = []
         warnings: List[str] = []
 
         for item in parts:
@@ -298,10 +301,16 @@ def save_parts_sync(
             if existing is None:
                 existing = proxy.get_part_by_number(pn)
 
-            # Resolve category ID
-            part_type_str = item.get("part_type")
+            # Resolve category ID: support direct part_type_id first
             part_type_id: Optional[str] = None
-            if part_type_str is not None:
+            raw_ptid = item.get("part_type_id")
+            if raw_ptid is not None:
+                ptid_str = str(raw_ptid).strip()
+                if ptid_str.isdigit():
+                    part_type_id = ptid_str
+
+            part_type_str = item.get("part_type")
+            if part_type_id is None and part_type_str is not None:
                 pts = str(part_type_str).strip()
                 if pts.isdigit():
                     part_type_id = pts
@@ -320,109 +329,135 @@ def save_parts_sync(
                             part_type_id = str(new_cat.part_type_id)
                             category_cache[new_cat.part_type_id] = new_cat.name
                             category_name_to_id[new_cat.name.lower()] = new_cat.part_type_id
-                            warnings.append(f"Created exotic category '{pts}' for part {pn}.")
-                        except Exception as exc:
+                            warnings.append(f"Created category '{pts}' for part {pn}.")
+                        except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
                             warnings.append(f"Could not create category '{pts}' for part {pn}: {exc}")
 
-            if existing is None:
-                # CREATE
-                create_req = {
-                    "part_number": pn,
-                    "quantity": item.get("quantity", 0),
-                    "low_stock_threshold": item.get("low_stock_threshold", 0),
-                    "cost": float(item.get("cost", 0.0)),
-                    "currency": item.get("currency") or "USD",
-                    "bin_number": item.get("bin_number"),
-                    "bin_number2": item.get("bin_number2"),
-                    "location": item.get("location"),
-                    "description": item.get("description"),
-                    "package_type": item.get("package_type"),
-                    "manufacturer": item.get("manufacturer"),
-                    "manufacturer_part_number": item.get("manufacturer_part_number"),
-                    "datasheet_url": item.get("datasheet_url"),
-                    "part_type_id": part_type_id,
-                }
-                created_part = proxy.create_part(create_req)
-                cat_desc = category_cache.get(created_part.part_type_id, pts if part_type_str else None)
-                created_list.append({
-                    "part_id": created_part.part_id,
-                    "part_number": created_part.part_number,
-                    "initial_values": compact_payload({
-                        "quantity": created_part.quantity,
-                        "bin_number": created_part.bin_number,
-                        "location": created_part.location,
-                        "package_type": created_part.package_type,
-                        "cost": created_part.cost,
-                        "currency": created_part.currency,
-                        "part_type": cat_desc,
-                    }),
-                })
-            else:
-                # UPDATE
-                old_vals = {
-                    "quantity": existing.quantity,
-                    "low_stock_threshold": existing.low_stock_threshold,
-                    "cost": existing.cost,
-                    "currency": existing.currency,
-                    "bin_number": existing.bin_number,
-                    "bin_number2": existing.bin_number2,
-                    "location": existing.location,
-                    "description": existing.description,
-                    "package_type": existing.package_type,
-                    "manufacturer": existing.manufacturer,
-                    "manufacturer_part_number": existing.manufacturer_part_number,
-                    "datasheet_url": existing.datasheet_url,
-                    "part_type": category_cache.get(existing.part_type_id, existing.part_type),
-                }
+            success = False
+            last_err: Optional[str] = None
+            retries = 0
 
-                update_req = {
-                    "part_id": existing.part_id,
-                    "part_number": pn,
-                    "quantity": item["quantity"] if "quantity" in item else existing.quantity,
-                    "low_stock_threshold": item["low_stock_threshold"] if "low_stock_threshold" in item else existing.low_stock_threshold,
-                    "cost": float(item["cost"]) if "cost" in item else existing.cost,
-                    "currency": item.get("currency") or existing.currency or "USD",
-                    "bin_number": item["bin_number"] if "bin_number" in item else existing.bin_number,
-                    "bin_number2": item["bin_number2"] if "bin_number2" in item else existing.bin_number2,
-                    "location": item["location"] if "location" in item else existing.location,
-                    "description": item["description"] if "description" in item else existing.description,
-                    "package_type": item["package_type"] if "package_type" in item else existing.package_type,
-                    "manufacturer": item["manufacturer"] if "manufacturer" in item else existing.manufacturer,
-                    "manufacturer_part_number": item["manufacturer_part_number"] if "manufacturer_part_number" in item else existing.manufacturer_part_number,
-                    "datasheet_url": item["datasheet_url"] if "datasheet_url" in item else existing.datasheet_url,
-                    "part_type_id": part_type_id if part_type_id is not None else (str(existing.part_type_id) if existing.part_type_id else None),
-                }
-                updated_part = proxy.update_part(update_req)
-                new_vals = {
-                    "quantity": updated_part.quantity,
-                    "low_stock_threshold": updated_part.low_stock_threshold,
-                    "cost": updated_part.cost,
-                    "currency": updated_part.currency,
-                    "bin_number": updated_part.bin_number,
-                    "bin_number2": updated_part.bin_number2,
-                    "location": updated_part.location,
-                    "description": updated_part.description,
-                    "package_type": updated_part.package_type,
-                    "manufacturer": updated_part.manufacturer,
-                    "manufacturer_part_number": updated_part.manufacturer_part_number,
-                    "datasheet_url": updated_part.datasheet_url,
-                    "part_type": category_cache.get(updated_part.part_type_id, updated_part.part_type),
-                }
+            for attempt in range(2):
+                try:
+                    if existing is None:
+                        # CREATE
+                        create_req = {
+                            "part_number": pn,
+                            "quantity": item.get("quantity", 0),
+                            "low_stock_threshold": item.get("low_stock_threshold", 0),
+                            "cost": float(item.get("cost", 0.0)),
+                            "currency": item.get("currency") or "USD",
+                            "bin_number": item.get("bin_number"),
+                            "bin_number2": item.get("bin_number2"),
+                            "location": item.get("location"),
+                            "description": item.get("description"),
+                            "package_type": item.get("package_type"),
+                            "manufacturer": item.get("manufacturer"),
+                            "manufacturer_part_number": item.get("manufacturer_part_number"),
+                            "datasheet_url": item.get("datasheet_url"),
+                            "part_type_id": part_type_id,
+                        }
+                        created_part = proxy.create_part(create_req)
+                        cat_desc = category_cache.get(created_part.part_type_id, pts if part_type_str else None)
+                        created_list.append({
+                            "part_id": created_part.part_id,
+                            "part_number": created_part.part_number,
+                            "initial_values": compact_payload({
+                                "quantity": created_part.quantity,
+                                "bin_number": created_part.bin_number,
+                                "location": created_part.location,
+                                "package_type": created_part.package_type,
+                                "cost": created_part.cost,
+                                "currency": created_part.currency,
+                                "part_type": cat_desc,
+                            }),
+                        })
+                    else:
+                        # UPDATE
+                        old_vals = {
+                            "quantity": existing.quantity,
+                            "low_stock_threshold": existing.low_stock_threshold,
+                            "cost": existing.cost,
+                            "currency": existing.currency,
+                            "bin_number": existing.bin_number,
+                            "bin_number2": existing.bin_number2,
+                            "location": existing.location,
+                            "description": existing.description,
+                            "package_type": existing.package_type,
+                            "manufacturer": existing.manufacturer,
+                            "manufacturer_part_number": existing.manufacturer_part_number,
+                            "datasheet_url": existing.datasheet_url,
+                            "part_type": category_cache.get(existing.part_type_id, existing.part_type),
+                        }
 
-                diff = generate_change_diff(compact_payload(old_vals), compact_payload(new_vals))
-                updated_list.append({
-                    "part_id": updated_part.part_id,
-                    "part_number": updated_part.part_number,
-                    "changes": diff,
+                        update_req = {
+                            "part_id": existing.part_id,
+                            "part_number": pn,
+                            "quantity": item["quantity"] if "quantity" in item else existing.quantity,
+                            "low_stock_threshold": item["low_stock_threshold"] if "low_stock_threshold" in item else existing.low_stock_threshold,
+                            "cost": float(item["cost"]) if "cost" in item else existing.cost,
+                            "currency": item.get("currency") or existing.currency or "USD",
+                            "bin_number": item["bin_number"] if "bin_number" in item else existing.bin_number,
+                            "bin_number2": item["bin_number2"] if "bin_number2" in item else existing.bin_number2,
+                            "location": item["location"] if "location" in item else existing.location,
+                            "description": item["description"] if "description" in item else existing.description,
+                            "package_type": item["package_type"] if "package_type" in item else existing.package_type,
+                            "manufacturer": item["manufacturer"] if "manufacturer" in item else existing.manufacturer,
+                            "manufacturer_part_number": item["manufacturer_part_number"] if "manufacturer_part_number" in item else existing.manufacturer_part_number,
+                            "datasheet_url": item["datasheet_url"] if "datasheet_url" in item else existing.datasheet_url,
+                            "part_type_id": part_type_id if part_type_id is not None else (str(existing.part_type_id) if existing.part_type_id else None),
+                        }
+                        updated_part = proxy.update_part(update_req)
+                        new_vals = {
+                            "quantity": updated_part.quantity,
+                            "low_stock_threshold": updated_part.low_stock_threshold,
+                            "cost": updated_part.cost,
+                            "currency": updated_part.currency,
+                            "bin_number": updated_part.bin_number,
+                            "bin_number2": updated_part.bin_number2,
+                            "location": updated_part.location,
+                            "description": updated_part.description,
+                            "package_type": updated_part.package_type,
+                            "manufacturer": updated_part.manufacturer,
+                            "manufacturer_part_number": updated_part.manufacturer_part_number,
+                            "datasheet_url": updated_part.datasheet_url,
+                            "part_type": category_cache.get(updated_part.part_type_id, updated_part.part_type),
+                        }
+
+                        diff = generate_change_diff(compact_payload(old_vals), compact_payload(new_vals))
+                        updated_list.append({
+                            "part_id": updated_part.part_id,
+                            "part_number": updated_part.part_number,
+                            "changes": diff,
+                        })
+                    success = True
+                    break
+                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                    last_err = str(exc)
+                    retries = attempt + 1
+                    if attempt == 0:
+                        time.sleep(0.2)
+                        continue
+
+            if not success:
+                failed_list.append({
+                    "part_number": pn,
+                    "error": last_err or "Mutation failed",
+                    "retries": retries,
                 })
+
+        status = "success"
+        if failed_list:
+            status = "partial_success" if (created_list or updated_list) else "error"
 
         return {
-            "status": "success",
+            "status": status,
             "created_count": len(created_list),
             "updated_count": len(updated_list),
-            "failed_count": 0,
+            "failed_count": len(failed_list),
             "created": created_list,
             "updated": updated_list,
+            "failed": failed_list,
             "warnings": warnings,
         }
 
@@ -487,11 +522,41 @@ def delete_parts_sync(
             }
 
         deleted_list: List[Dict[str, Any]] = []
+        failed_list: List[Dict[str, Any]] = []
+
         for item in to_delete:
-            proxy.delete_part(item["part_id"])
-            deleted_list.append(item)
+            success = False
+            last_err: Optional[str] = None
+            retries = 0
+
+            for attempt in range(2):
+                try:
+                    proxy.delete_part(item["part_id"])
+                    deleted_list.append(item)
+                    success = True
+                    break
+                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                    last_err = str(exc)
+                    retries = attempt + 1
+                    if attempt == 0:
+                        time.sleep(0.2)
+                        continue
+
+            if not success:
+                failed_list.append({
+                    "item": item,
+                    "error": last_err or "Deletion failed",
+                    "retries": retries,
+                })
+
+        status = "success"
+        if failed_list:
+            status = "partial_success" if deleted_list else "error"
 
         return {
-            "status": "success",
+            "status": status,
+            "deleted_count": len(deleted_list),
+            "failed_count": len(failed_list),
             "deleted": deleted_list,
+            "failed": failed_list,
         }

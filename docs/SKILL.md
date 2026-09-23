@@ -21,23 +21,28 @@ flowchart TD
 
 ### Step 2: Part Discovery & Inspection
 - Discover existing parts in local inventory using `list_parts` with query keywords, category path, bin number, location, package type, manufacturer, or low-stock filters.
+- Browse category hierarchy using `list_part_types` (returns hierarchical tree of categories with IDs and names).
 - For deep technical evaluation, pass candidate identifiers (`part_ids` or `part_numbers`) to `get_parts` to retrieve complete electrical values, pinouts, KiCad symbols, supplier links, storage bins, category paths, and datasheets.
 
 ### Step 3: Part Lifecycle / Cataloging & Ingestion
-- Persist new components into inventory via `save_parts` with part numbers, quantities, package types, bin locations, unit costs, datasheet URLs, and category paths (e.g. `Passives::Resistors::SMD`). Missing category nodes are created automatically.
+- Persist categories via `save_part_types` (`name`, optional `parent_part_type_id`, `description`).
+- Persist new components into inventory via `save_parts` with part numbers, quantities, package types, bin locations, unit costs, datasheet URLs, and category identifiers (either numeric `part_type_id` or path strings like `Passives::Resistors::SMD`). Missing category nodes in path strings are created automatically.
 
 ### Step 4: Stock Maintenance & Auditing
 - Update quantities, low-stock alert thresholds, or physical storage bin locations via `save_parts`.
 - Decommission obsolete or surplus stock in bulk via `delete_parts`.
+- Remove unused categories via `delete_part_types`.
 
 ### Step 5: Project Lifecycle & BOM Assembly
-- Initialize a project with `manage_project(action="create", name="...")`.
+- Initialize or update projects with `save_projects(projects=[{"name": "...", "description": "..."}])`.
+- Query existing projects via `list_projects` or `get_projects`.
 - Populate board line items using `manage_bom_parts`, linking inventory parts with per-board required quantities and silkscreen reference designators (e.g. `R1, R2, C1`).
 - Optional stock adjustments (`adjust_stock_delta`) can be applied simultaneously when allocating or deallocating parts.
+- Delete obsolete projects via `delete_projects(project_ids=[...])`.
 
 ### Step 6: Production Build & Stock Deduction
-- Verify project readiness with `manage_project(action="get", project_id=..., include_bom=True)`.
-- Trigger batch assembly deduction via `manage_project(action="consume_bom", project_id=..., build_quantity=N)`.
+- Verify project readiness with `get_projects(project_ids=[...], include_bom=True)`.
+- Trigger batch assembly deduction via `consume_project_bom(project_id=..., build_quantity=N)`.
 - If on-hand inventory is insufficient for any component, the operation halts with a shortage matrix. Restock missing items before re-executing.
 
 ---
@@ -146,16 +151,22 @@ flowchart TD
 1. **Quantity Update Semantics:**
    - In `save_parts`: `quantity` sets the **absolute** on-hand count in inventory.
    - In `manage_bom_parts`: `adjust_stock_delta` applies an **additive delta** to inventory (`stock += adjust_stock_delta`).
-   - In `manage_project(action="consume_bom")`: Inventory is decremented by `quantity_per_board * build_quantity`.
+   - In `consume_project_bom`: Inventory is decremented by `quantity_per_board * build_quantity`.
 
 2. **BOM Shortage Circuit Breaker:**
-   - `consume_bom` pre-flights stock across all BOM items before executing deductions.
+   - `consume_project_bom` pre-flights stock across all BOM items before executing deductions.
    - If `on_hand < (bom_quantity * build_quantity)` for any line item, execution aborts immediately, returns a detailed shortage list, and modifies **zero** inventory records.
 
-3. **Category Path Parsing:**
-   - Category strings can be supplied as leaf names (`"SMD"`) or full paths (`"Passives::Resistors::SMD"`, `"Passives > Resistors > SMD"`, `"Passives#Resistors#SMD"`).
-   - If intermediate or leaf categories do not exist, Binner creates them in order.
+3. **Batch Mutation Execution Semantics:**
+   - All batch mutation tools (`save_parts`, `delete_parts`, `save_projects`, `delete_projects`, `save_part_types`, `delete_part_types`, `manage_bom_parts`) follow first retry, then report, never rollback.
+   - Transient network failures are retried once immediately. Permanent failures are reported with specific errors in `failed`, while already committed items remain persistent.
 
-4. **Identifier Resolution:**
+4. **Category Path & Tree Representation:**
+   - Category strings can be supplied as leaf names (`"SMD"`) or delimited paths (`"Passives::Resistors::SMD"`, `"Passives > Resistors > SMD"`, `"Passives#Resistors#SMD"`).
+   - If intermediate or leaf categories do not exist, Binner creates them in order.
+   - `list_part_types` returns the full category tree with numeric IDs and names. Part counts are omitted by default for performance (`include_counts=False`).
+
+5. **Identifier Resolution:**
    - Parts can be addressed by `part_number` (case-insensitive string) or `part_id` (integer).
+   - In `save_parts`, target categories can be specified via numeric `part_type_id` (integer) or `part_type` (path string).
    - Projects can be addressed by `name` or `project_id`.

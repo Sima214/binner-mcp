@@ -1,4 +1,4 @@
-"""Model Context Protocol (MCP) server bindings, tools, resources, and prompts for Binner."""
+"""Model Context Protocol (MCP) server bindings, tools, and resources for Binner."""
 
 from binner_mcp.mcp.server import BinnerMCPServer
 

@@ -8,6 +8,7 @@ from binner_mcp.api.client import BinnerAPIProxy
 from binner_mcp.api.exceptions import (
     BinnerAuthError,
     BinnerConnectionError,
+    BinnerError,
 )
 from binner_mcp.common.exceptions import ProxyConnectionError
 from binner_mcp.mcp.normalization import compact_payload
@@ -100,7 +101,7 @@ def get_system_status_sync(
                 "low_stock_parts": summary.low_stock_count,
                 "projects_count": summary.projects_count,
             }
-        except Exception as err:
+        except (requests.RequestException, BinnerError, KeyError, ValueError) as err:
             logger.warning("Failed to fetch inventory summary: %s", err)
             inventory_info = {}
 
@@ -120,7 +121,7 @@ def get_system_status_sync(
                     "status": "online" if cloud_status.is_up else "offline",
                     "database_status": "online" if cloud_status.is_database_up else "offline",
                 }
-            except (SwarmError, Exception) as exc:
+            except (SwarmError, requests.RequestException, KeyError, ValueError) as exc:
                 result["swarm_cloud"] = {
                     "status": "unreachable",
                     "detail": str(exc),

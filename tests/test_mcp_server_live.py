@@ -192,13 +192,13 @@ async def test_live_mcp_projects_and_bom_lifecycle(live_proxy: BinnerAPIProxy) -
         async with Client(server.mcp, raise_exceptions=True) as client:
             # 1. Create project
             proj_res = await client.call_tool(
-                "manage_project",
-                {"action": "create", "name": proj_name, "description": "Test maker project"},
+                "save_projects",
+                {"projects": [{"name": proj_name, "description": "Test maker project"}]},
             )
             assert not proj_res.is_error
             proj_data = proj_res.structured_content["result"]
             assert proj_data["status"] == "success"
-            proj_id = proj_data["project"]["project_id"]
+            proj_id = proj_data["created"][0]["project_id"]
 
             # 2. Add BOM parts batch
             bom_res = await client.call_tool(
@@ -217,17 +217,18 @@ async def test_live_mcp_projects_and_bom_lifecycle(live_proxy: BinnerAPIProxy) -
 
             # 3. Inspect project BOM
             get_proj_res = await client.call_tool(
-                "manage_project",
-                {"action": "get", "project_id": proj_id, "include_bom": True},
+                "get_projects",
+                {"project_ids": [proj_id], "include_bom": True},
             )
             assert not get_proj_res.is_error
             get_proj_data = get_proj_res.structured_content["result"]
-            assert "bom" in get_proj_data
+            assert len(get_proj_data["projects"]) == 1
+            assert "bom" in get_proj_data["projects"][0]
 
             # 4. Shortage test: attempt to consume for 10 units (requires 20, but stock is 10)
             shortage_res = await client.call_tool(
-                "manage_project",
-                {"action": "consume_bom", "project_id": proj_id, "build_quantity": 10},
+                "consume_project_bom",
+                {"project_id": proj_id, "build_quantity": 10},
             )
             assert not shortage_res.is_error
             shortage_data = shortage_res.structured_content["result"]
@@ -241,8 +242,8 @@ async def test_live_mcp_projects_and_bom_lifecycle(live_proxy: BinnerAPIProxy) -
 
             # 5. Success consumption: consume for 2 units (requires 4, stock is 10)
             consume_res = await client.call_tool(
-                "manage_project",
-                {"action": "consume_bom", "project_id": proj_id, "build_quantity": 2},
+                "consume_project_bom",
+                {"project_id": proj_id, "build_quantity": 2},
             )
             assert not consume_res.is_error
             consume_data = consume_res.structured_content["result"]
@@ -252,6 +253,15 @@ async def test_live_mcp_projects_and_bom_lifecycle(live_proxy: BinnerAPIProxy) -
 
             # Verify stock in live DB is now 6
             assert live_proxy.get_part_by_number(pn).quantity == 6
+
+            # 6. Delete project via delete_projects tool
+            del_proj_res = await client.call_tool(
+                "delete_projects",
+                {"project_ids": [proj_id]},
+            )
+            assert not del_proj_res.is_error
+            assert del_proj_res.structured_content["result"]["status"] == "success"
+            proj_id = None
 
     finally:
         if proj_id:
@@ -277,4 +287,48 @@ async def test_live_mcp_resources(live_proxy: BinnerAPIProxy) -> None:
         assert len(cat_res.contents) > 0
         cat_json = json.loads(cat_res.contents[0].text)
         assert "categories" in cat_json
+
+
+@pytest.mark.anyio
+async def test_live_mcp_part_types_lifecycle(live_proxy: BinnerAPIProxy) -> None:
+    """Exercise live part type tree listing, saving, and deletion."""
+    server = BinnerMCPServer(proxy=live_proxy, swarm=SwarmClient())
+    server.connect()
+
+    suffix = uuid.uuid4().hex[:6]
+    type_name = f"TEST_TYPE_{suffix}"
+    type_id = None
+
+    try:
+        async with Client(server.mcp, raise_exceptions=True) as client:
+            # 1. List part types tree
+            list_res = await client.call_tool("list_part_types", {})
+            assert not list_res.is_error
+            assert list_res.structured_content["result"]["status"] == "success"
+            assert "tree" in list_res.structured_content["result"]
+
+            # 2. Save new part type
+            save_res = await client.call_tool(
+                "save_part_types",
+                {"part_types": [{"name": type_name, "description": "Temporary test part type"}]},
+            )
+            assert not save_res.is_error
+            save_data = save_res.structured_content["result"]
+            assert save_data["status"] == "success"
+            assert save_data["created_count"] == 1
+            type_id = save_data["created"][0]["part_type_id"]
+
+            # 3. Delete part type via delete_part_types
+            del_res = await client.call_tool(
+                "delete_part_types",
+                {"part_type_ids": [type_id]},
+            )
+            assert not del_res.is_error
+            assert del_res.structured_content["result"]["status"] == "success"
+            assert del_res.structured_content["result"]["deleted_count"] == 1
+            type_id = None
+    finally:
+        if type_id:
+            live_proxy.delete_part_type(type_id)
+
 

@@ -6,6 +6,7 @@ import requests
 
 from binner_mcp.mcp.normalization import compact_payload
 from binner_mcp.swarmer.client import SwarmClient
+from binner_mcp.swarmer.exceptions import SwarmError
 
 logger = logging.getLogger("binner_mcp.mcp.tools.cloud")
 
@@ -78,7 +79,7 @@ def lookup_cloud_parts_sync(
             }
             results.append(compact_payload(record))
 
-        except Exception as exc:
+        except (SwarmError, requests.RequestException, ValueError, KeyError) as exc:
             logger.debug("Swarm search failed for %s: %s", pn_clean, exc)
             not_found.append(pn_clean)
 

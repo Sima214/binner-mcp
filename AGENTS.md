@@ -22,9 +22,8 @@ src/binner_mcp/
 └── mcp/                     # Layer 2: Protocol Binding Layer
     ├── __init__.py
     ├── server.py            # MCP server setup & lifecycle
-    ├── tools.py             # Registered MCP Tools (actions)
-    ├── resources.py         # Registered MCP Resources (data streams)
-    └── prompts.py           # Curated prompt templates
+    ├── tools/               # Modular MCP tool implementations
+    └── resources.py         # Registered MCP Resources (data streams)
 ```
 
 * **`reference/` Directory:** Contains reference documentation and upstream Binner C# source code (`Binner.Web`, `Binner-Backend`). **Treat `reference/` as read-only**. Do not edit reference files unless explicitly instructed to update the design doc.
@@ -92,6 +91,10 @@ src/binner_mcp/
 * **Local Loopback Probing:** Use `curl` directly via `run_command` when probing local loopback (`127.0.0.1` / `localhost`) endpoints rather than browser/URL tools.
 * **Workspace Isolation:** Never pollute root `/tmp` with ad-hoc test files. Use `/tmp/binner_mcp` or repository-scoped directories.
 * **Source Code Writing:** Never pass `ArtifactMetadata` to `write_to_file` when modifying repository source files (metadata is strictly restricted to markdown artifacts in the artifact directory).
+
+### Rule 8: Category Terminology Restrictions
+* **Forbidden Terms:** Do not use the terms "breadcrumbs" or "taxonomies" in documentation, docstrings, variable names, function names, or tool descriptions.
+* **Hierarchy Representation:** Delimiter-based hierarchies of part types (e.g. `Audio::Buzzer` with configurable delimiters) are fully supported and should be retained as-is. Part type IDs must always be supported and prioritized.
 
 ---
 

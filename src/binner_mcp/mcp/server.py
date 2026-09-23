@@ -1,4 +1,4 @@
-"""Binner MCP 2.X Server implementation using Python MCP SDK 2.X."""
+"""Binner MCP Server implementation using Python MCP SDK 2."""
 
 import asyncio
 import concurrent.futures
@@ -6,9 +6,12 @@ import functools
 import logging
 from typing import Any, Dict, List, Optional
 
+import requests
+
 from mcp.server.mcpserver import MCPServer
 
 from binner_mcp.api.client import BinnerAPIProxy
+from binner_mcp.api.exceptions import BinnerError
 from binner_mcp.config import BinnerConfig, load_config
 from binner_mcp.mcp.normalization import compact_payload
 from binner_mcp.mcp.tools.cloud import lookup_cloud_parts_sync
@@ -18,7 +21,19 @@ from binner_mcp.mcp.tools.inventory import (
     list_parts_sync,
     save_parts_sync,
 )
-from binner_mcp.mcp.tools.projects import manage_bom_parts_sync, manage_project_sync
+from binner_mcp.mcp.tools.part_types import (
+    delete_part_types_sync,
+    list_part_types_sync,
+    save_part_types_sync,
+)
+from binner_mcp.mcp.tools.projects import (
+    consume_project_bom_sync,
+    delete_projects_sync,
+    get_projects_sync,
+    list_projects_sync,
+    manage_bom_parts_sync,
+    save_projects_sync,
+)
 from binner_mcp.mcp.tools.system import get_system_status_sync
 from binner_mcp.swarmer.client import SwarmClient
 
@@ -27,7 +42,7 @@ logger = logging.getLogger("binner_mcp.mcp.server")
 
 class BinnerMCPServer:
     """
-    Standard Python class managing the Binner MCP 2.X server lifecycle,
+    Standard Python class managing the Binner MCP server lifecycle,
     underlying REST client proxy, single-thread task queue, and protocol tool registrations.
     """
 
@@ -201,34 +216,162 @@ class BinnerMCPServer:
             )
 
         @self.mcp.tool()
-        async def manage_project(
-            action: str = "list",
+        async def list_projects(
+            page: int = 1,
+            limit: int = 50,
+            sort_by: str = "DateCreatedUtc",
+            direction: str = "Descending",
+        ) -> Dict[str, Any]:
+            """
+            Search and list maker projects with pagination and metadata.
+
+            Args:
+                page: Page number (1-based).
+                limit: Max projects to return (1-500).
+                sort_by: Column to sort by (default 'DateCreatedUtc').
+                direction: 'Ascending' or 'Descending'.
+            """
+            return await self._run_sync(
+                list_projects_sync,
+                self.proxy,
+                page=page,
+                limit=limit,
+                sort_by=sort_by,
+                direction=direction,
+            )
+
+        @self.mcp.tool()
+        async def get_projects(
+            project_ids: Optional[List[int]] = None,
+            names: Optional[List[str]] = None,
+            include_bom: bool = False,
+        ) -> Dict[str, Any]:
+            """
+            Batch inspect maker projects by IDs or names, with optional BOM inclusion.
+
+            Args:
+                project_ids: Numeric project IDs to inspect.
+                names: Project names to inspect.
+                include_bom: Include Bill of Materials for each project.
+            """
+            return await self._run_sync(
+                get_projects_sync,
+                self.proxy,
+                project_ids=project_ids,
+                names=names,
+                include_bom=include_bom,
+            )
+
+        @self.mcp.tool()
+        async def save_projects(
+            projects: List[Dict[str, Any]],
+        ) -> Dict[str, Any]:
+            """
+            Batch create or update maker projects. Each item requires 'name' (for create) or 'project_id' (for update).
+
+            Args:
+                projects: Project records with 'name', optional 'description', optional 'project_id', optional 'archived'.
+            """
+            return await self._run_sync(
+                save_projects_sync,
+                self.proxy,
+                projects=projects,
+            )
+
+        @self.mcp.tool()
+        async def delete_projects(
+            project_ids: Optional[List[int]] = None,
+            names: Optional[List[str]] = None,
+        ) -> Dict[str, Any]:
+            """
+            Batch delete maker projects by ID or name.
+
+            Args:
+                project_ids: Numeric project IDs to delete.
+                names: Project names to delete.
+            """
+            return await self._run_sync(
+                delete_projects_sync,
+                self.proxy,
+                project_ids=project_ids,
+                names=names,
+            )
+
+        @self.mcp.tool()
+        async def consume_project_bom(
             project_id: Optional[int] = None,
             name: Optional[str] = None,
-            description: Optional[str] = None,
-            include_bom: bool = False,
             build_quantity: int = 1,
         ) -> Dict[str, Any]:
             """
-            Manage projects: list, inspect with BOM, create, or consume stock for builds.
+            Deduct inventory stock for assembling board units of a maker project's BOM.
 
             Args:
-                action: 'list', 'get', 'create', or 'consume_bom'.
-                project_id: Target project ID.
-                name: Project name (required for create; alternative to project_id for get/consume).
-                description: Project description (for create).
-                include_bom: Include BOM line items when action='get'.
-                build_quantity: Units to assemble when action='consume_bom'.
+                project_id: Numeric project ID to consume for.
+                name: Project name to consume for.
+                build_quantity: Number of complete board units to assemble (>= 1).
             """
             return await self._run_sync(
-                manage_project_sync,
+                consume_project_bom_sync,
                 self.proxy,
-                action=action,
                 project_id=project_id,
                 name=name,
-                description=description,
-                include_bom=include_bom,
                 build_quantity=build_quantity,
+            )
+
+        @self.mcp.tool()
+        async def list_part_types(
+            include_part_counts: bool = False,
+        ) -> Dict[str, Any]:
+            """
+            List all part types structured as a hierarchical tree focusing on part type IDs and names.
+
+            Args:
+                include_part_counts: If True, includes parts count per part type (default False).
+            """
+            return await self._run_sync(
+                list_part_types_sync,
+                self.proxy,
+                include_part_counts=include_part_counts,
+            )
+
+        @self.mcp.tool()
+        async def save_part_types(
+            part_types: List[Dict[str, Any]],
+        ) -> Dict[str, Any]:
+            """
+            Batch create or update part types.
+
+            Args:
+                part_types: Part type records with 'name', optional 'description', optional 'parent_part_type_id', optional 'part_type_id'.
+            """
+            return await self._run_sync(
+                save_part_types_sync,
+                self.proxy,
+                self._category_cache,
+                self._category_name_to_id,
+                part_types=part_types,
+            )
+
+        @self.mcp.tool()
+        async def delete_part_types(
+            part_type_ids: Optional[List[int]] = None,
+            names: Optional[List[str]] = None,
+        ) -> Dict[str, Any]:
+            """
+            Batch delete part types by ID or name.
+
+            Args:
+                part_type_ids: Numeric part type IDs to delete.
+                names: Part type names to delete.
+            """
+            return await self._run_sync(
+                delete_part_types_sync,
+                self.proxy,
+                self._category_cache,
+                self._category_name_to_id,
+                part_type_ids=part_type_ids,
+                names=names,
             )
 
         @self.mcp.tool()
@@ -377,7 +520,7 @@ class BinnerMCPServer:
         with self.proxy._lock:
             try:
                 is_alive = self.proxy.ping()
-            except Exception as exc:
+            except (requests.RequestException, BinnerError, ConnectionError, OSError) as exc:
                 logger.warning("Binner instance at %s is unreachable: %s", self.config.base_url, exc)
                 return False
 
@@ -395,7 +538,7 @@ class BinnerMCPServer:
                 self.proxy.list_parts(results=200)
                 logger.info("Connected to Binner at %s; identity and category caches hydrated.", self.config.base_url)
                 return True
-            except Exception as exc:
+            except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
                 logger.warning("Failed to authenticate with Binner at %s: %s", self.config.base_url, exc)
                 return False
 
@@ -414,7 +557,7 @@ class BinnerMCPServer:
                 self._category_cache[tid] = category_path
                 self._category_name_to_id[item.name.lower()] = tid
                 self._category_name_to_id[category_path.lower()] = tid
-        except Exception as err:
+        except (requests.RequestException, BinnerError, ValueError, KeyError) as err:
             logger.debug("Category cache pre-warming failed: %s", err)
 
     def close(self) -> None:

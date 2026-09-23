@@ -8,6 +8,7 @@ import json
 import threading
 from unittest.mock import MagicMock
 import pytest
+import requests
 from mcp import Client
 
 from binner_mcp.api.client import BinnerAPIProxy
@@ -184,7 +185,14 @@ async def test_tool_and_resource_and_prompt_discovery(mock_proxy: MagicMock, moc
             "get_parts",
             "save_parts",
             "delete_parts",
-            "manage_project",
+            "list_projects",
+            "get_projects",
+            "save_projects",
+            "delete_projects",
+            "consume_project_bom",
+            "list_part_types",
+            "save_part_types",
+            "delete_part_types",
             "manage_bom_parts",
             "lookup_cloud_parts",
         }
@@ -449,7 +457,7 @@ async def test_delete_parts_fail_has_no_side_effects(mock_proxy: MagicMock, mock
 # --- Projects & BOM Tests ---
 
 @pytest.mark.anyio
-async def test_manage_project_consume_bom_shortage_has_no_side_effects(
+async def test_consume_project_bom_shortage_has_no_side_effects(
     mock_proxy: MagicMock, mock_swarm: MagicMock
 ) -> None:
     """When a shortage is detected on 1 line item, zero stock deductions occur."""
@@ -472,8 +480,8 @@ async def test_manage_project_consume_bom_shortage_has_no_side_effects(
 
     async with Client(server.mcp, raise_exceptions=True) as client:
         result = await client.call_tool(
-            "manage_project",
-            {"action": "consume_bom", "project_id": 1, "build_quantity": 1},
+            "consume_project_bom",
+            {"project_id": 1, "build_quantity": 1},
         )
         assert not result.is_error
         data = result.structured_content["result"]
@@ -489,7 +497,7 @@ async def test_manage_project_consume_bom_shortage_has_no_side_effects(
 
 
 @pytest.mark.anyio
-async def test_manage_project_consume_bom_success(
+async def test_consume_project_bom_success(
     mock_proxy: MagicMock, mock_swarm: MagicMock
 ) -> None:
     proj = ProjectResponse(projectId=1, name="Sensor Node")
@@ -507,8 +515,8 @@ async def test_manage_project_consume_bom_success(
 
     async with Client(server.mcp, raise_exceptions=True) as client:
         result = await client.call_tool(
-            "manage_project",
-            {"action": "consume_bom", "project_id": 1, "build_quantity": 2},
+            "consume_project_bom",
+            {"project_id": 1, "build_quantity": 2},
         )
         assert not result.is_error
         data = result.structured_content["result"]
@@ -666,3 +674,144 @@ async def test_configurable_category_delimiter(mock_proxy: MagicMock, mock_swarm
     server_default = BinnerMCPServer(config=config_default, proxy=mock_proxy, swarm=mock_swarm)
     server_default._warm_category_cache()
     assert server_default._category_cache[3] == "Passives::Resistors::SMD"
+
+
+@pytest.mark.anyio
+async def test_list_part_types_tree_structure(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    mock_proxy.get_part_types.return_value = [
+        PartTypeResponse(partTypeId=1, name="Resistor", parentPartTypeId=None),
+        PartTypeResponse(partTypeId=2, name="Through-Hole", parentPartTypeId=1),
+        PartTypeResponse(partTypeId=3, name="Capacitor", parentPartTypeId=None),
+    ]
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        res = await client.call_tool("list_part_types", {})
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "success"
+        assert data["total_types"] == 3
+        # Should be rooted at 2 top-level categories: Resistor and Capacitor
+        tree = data["tree"]
+        assert len(tree) == 2
+        resistor_node = next(n for n in tree if n["name"] == "Resistor")
+        assert len(resistor_node["children"]) == 1
+        assert resistor_node["children"][0]["name"] == "Through-Hole"
+        assert resistor_node["children"][0]["part_type_id"] == 2
+
+
+@pytest.mark.anyio
+async def test_save_and_delete_part_types(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    mock_proxy.create_part_type.return_value = PartTypeResponse(partTypeId=10, name="Sensor")
+    mock_proxy.delete_part_type.return_value = True
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # Save
+        save_res = await client.call_tool(
+            "save_part_types",
+            {"part_types": [{"name": "Sensor", "description": "Environmental sensors"}]},
+        )
+        assert not save_res.is_error
+        save_data = save_res.structured_content["result"]
+        assert save_data["status"] == "success"
+        assert save_data["created_count"] == 1
+        assert save_data["created"][0]["part_type_id"] == 10
+
+        # Delete
+        del_res = await client.call_tool(
+            "delete_part_types",
+            {"part_type_ids": [10]},
+        )
+        assert not del_res.is_error
+        del_data = del_res.structured_content["result"]
+        assert del_data["status"] == "success"
+        assert del_data["deleted_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_projects_crud_tools(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    proj = ProjectResponse(projectId=5, name="Drone Controller", description="Quadcopter FC")
+    mock_proxy.get_projects.return_value = [proj]
+    mock_proxy.create_project.return_value = proj
+    mock_proxy.get_project.side_effect = lambda project_id=None, name=None: proj if project_id == 5 else None
+    mock_proxy.delete_project.return_value = True
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # 1. List
+        list_res = await client.call_tool("list_projects", {})
+        assert not list_res.is_error
+        assert len(list_res.structured_content["result"]["projects"]) == 1
+
+        # 2. Save (create)
+        save_res = await client.call_tool(
+            "save_projects",
+            {"projects": [{"name": "Drone Controller", "description": "Quadcopter FC"}]},
+        )
+        assert not save_res.is_error
+        assert save_res.structured_content["result"]["created_count"] == 1
+
+        # 3. Get
+        get_res = await client.call_tool("get_projects", {"project_ids": [5]})
+        assert not get_res.is_error
+        assert get_res.structured_content["result"]["projects"][0]["project"]["project_id"] == 5
+
+        # 4. Delete
+        del_res = await client.call_tool("delete_projects", {"project_ids": [5]})
+        assert not del_res.is_error
+        assert del_res.structured_content["result"]["deleted_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_batch_retry_then_report_never_rollback(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    """Verify that batch mutation retries transient errors, reports failures, and never rolls back."""
+    mock_proxy.get_part_by_number.return_value = None
+
+    attempts = {"FAIL-PERMANENT": 0}
+
+    def mock_create(req):
+        pn = req.get("part_number")
+        if pn == "FAIL-PERMANENT":
+            attempts[pn] += 1
+            raise requests.exceptions.ConnectionError("Temporary socket timeout")
+        return PartResponse(partId=100, partNumber=pn)
+
+    mock_proxy.create_part.side_effect = mock_create
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        res = await client.call_tool(
+            "save_parts",
+            {
+                "parts": [
+                    {"part_number": "PART-SUCCESS-1", "quantity": 10},
+                    {"part_number": "FAIL-PERMANENT", "quantity": 5},
+                    {"part_number": "PART-SUCCESS-2", "quantity": 20},
+                ]
+            },
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+
+        # Status should report partial success
+        assert data["status"] == "partial_success"
+        assert data["created_count"] == 2
+        assert data["failed_count"] == 1
+
+        # Invariant: FAIL-PERMANENT was retried (2 attempts total)
+        assert attempts["FAIL-PERMANENT"] == 2
+
+        # Invariant: Both PART-SUCCESS-1 and PART-SUCCESS-2 were committed (no rollback)
+        created_pns = [c["part_number"] for c in data["created"]]
+        assert "PART-SUCCESS-1" in created_pns
+        assert "PART-SUCCESS-2" in created_pns
+
+        # Invariant: Failure was reported with details
+        assert data["failed"][0]["part_number"] == "FAIL-PERMANENT"
+        assert "Temporary socket timeout" in data["failed"][0]["error"]
+
+

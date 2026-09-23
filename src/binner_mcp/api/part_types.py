@@ -62,3 +62,20 @@ class PartTypesComp:
             json={"partTypeId": part_type_id},
         )
         return resp.status_code == 200
+
+    def get_part_type_by_id(self, part_type_id: int) -> Optional[PartTypeResponse]:
+        """Find a part type by ID."""
+        all_types = self.get_part_types()
+        for pt in all_types:
+            if pt.part_type_id == part_type_id:
+                return pt
+        return None
+
+    def get_part_type_by_name(self, name: str) -> Optional[PartTypeResponse]:
+        """Find a part type by name (case-insensitive)."""
+        name_clean = name.strip().lower()
+        all_types = self.get_part_types()
+        for pt in all_types:
+            if pt.name and pt.name.strip().lower() == name_clean:
+                return pt
+        return None
