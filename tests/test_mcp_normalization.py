@@ -1,6 +1,6 @@
 """Unit tests for MCP payload normalization and change diff generation."""
 
-from binner_mcp.mcp.normalization import compact_payload, generate_change_diff
+from binner_mcp.mcp.normalization import compact_payload, format_lean_bom, generate_change_diff
 
 
 def test_compact_payload_prunes_none_and_empty() -> None:
@@ -76,3 +76,74 @@ def test_generate_change_diff_strict_null_trimming() -> None:
 
     # 4. Cleared field
     assert diff["location"] == {"from": "Shelf 1", "cleared": True}
+
+
+def test_compact_payload_prunes_sentinel_strings() -> None:
+    data = {
+        "id": 100,
+        "created_date": "0001-01-01T00:00:00Z",
+        "updated_date": "0001-01-01T00:00:00",
+        "short_date": "0001-01-01",
+        "guid": "00000000-0000-0000-0000-000000000000",
+        "valid_date": "2026-09-23T12:00:00Z",
+        "valid_guid": "12345678-1234-1234-1234-123456789abc",
+    }
+    cleaned = compact_payload(data)
+    assert cleaned == {
+        "id": 100,
+        "valid_date": "2026-09-23T12:00:00Z",
+        "valid_guid": "12345678-1234-1234-1234-123456789abc",
+    }
+
+
+def test_format_lean_bom_flattens_and_normalizes() -> None:
+    raw_bom = {
+        "parts": [
+            {
+                "projectPartAssignmentId": 56,
+                "partId": 913,
+                "partNumber": "QA_BOM_TEST_LED",
+                "quantity": 2,
+                "notes": "D1, D2",
+                "part": {
+                    "partId": 913,
+                    "partNumber": "QA_BOM_TEST_LED",
+                    "quantity": 100,
+                    "packageType": "0805",
+                    "dateCreated": "0001-01-01T00:00:00Z",
+                    "customId": "00000000-0000-0000-0000-000000000000",
+                },
+            },
+            {
+                "projectPartAssignmentId": 57,
+                "partId": 914,
+                "partName": "10k Resistor",
+                "quantity": 4,
+                "referenceDesignator": "R1-R4",
+                "part": {
+                    "quantity": 500,
+                    "packageType": "0603",
+                },
+            },
+        ]
+    }
+    lean = format_lean_bom(raw_bom)
+    assert len(lean) == 2
+    assert lean[0] == {
+        "assignment_id": 56,
+        "part_id": 913,
+        "part_number": "QA_BOM_TEST_LED",
+        "quantity": 2,
+        "reference_designator": "D1, D2",
+        "stock_on_hand": 100,
+        "package_type": "0805",
+    }
+    assert lean[1] == {
+        "assignment_id": 57,
+        "part_id": 914,
+        "part_number": "10k Resistor",
+        "quantity": 4,
+        "reference_designator": "R1-R4",
+        "stock_on_hand": 500,
+        "package_type": "0603",
+    }

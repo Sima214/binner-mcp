@@ -161,13 +161,15 @@ class BinnerMCPServer:
         async def get_parts(
             part_numbers: Optional[List[str]] = None,
             part_ids: Optional[List[int]] = None,
+            fields: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
             """
-            Get full component details, bin locations, category paths, and datasheets by part number or ID.
+            Get component details, bin locations, category paths, and datasheets by part number or ID.
 
             Args:
                 part_numbers: Part numbers to fetch.
                 part_ids: Numeric part IDs to fetch.
+                fields: Optional list of specific fields to return (e.g. ['quantity', 'bin_number', 'location']).
             """
             return await self._run_sync(
                 get_parts_sync,
@@ -175,6 +177,7 @@ class BinnerMCPServer:
                 self._category_cache,
                 part_numbers=part_numbers,
                 part_ids=part_ids,
+                fields=fields,
             )
 
         @self.mcp.tool()
@@ -221,15 +224,17 @@ class BinnerMCPServer:
             limit: int = 50,
             sort_by: str = "DateCreatedUtc",
             direction: str = "Descending",
+            query: Optional[str] = None,
         ) -> Dict[str, Any]:
             """
-            Search and list maker projects with pagination and metadata.
+            Search and list maker projects with pagination, keyword search, and metadata.
 
             Args:
                 page: Page number (1-based).
                 limit: Max projects to return (1-500).
                 sort_by: Column to sort by (default 'DateCreatedUtc').
                 direction: 'Ascending' or 'Descending'.
+                query: Optional search keyword to filter projects by name or description.
             """
             return await self._run_sync(
                 list_projects_sync,
@@ -238,6 +243,7 @@ class BinnerMCPServer:
                 limit=limit,
                 sort_by=sort_by,
                 direction=direction,
+                query=query,
             )
 
         @self.mcp.tool()
@@ -321,17 +327,29 @@ class BinnerMCPServer:
 
         @self.mcp.tool()
         async def list_part_types(
+            depth: Optional[int] = None,
+            root_id: Optional[int] = None,
+            root_name: Optional[str] = None,
+            include_descriptions: bool = False,
             include_part_counts: bool = False,
         ) -> Dict[str, Any]:
             """
-            List all part types structured as a hierarchical tree focusing on part type IDs and names.
+            List part types structured as a lightweight hierarchical tree focusing on IDs and names.
 
             Args:
+                depth: Optional maximum depth of tree recursion (e.g. 1 for top-level root categories only).
+                root_id: Optional root category ID to scope the tree to a single subtree.
+                root_name: Optional root category name to scope the tree to a single subtree.
+                include_descriptions: If True, includes description per node (default False).
                 include_part_counts: If True, includes parts count per part type (default False).
             """
             return await self._run_sync(
                 list_part_types_sync,
                 self.proxy,
+                depth=depth,
+                root_id=root_id,
+                root_name=root_name,
+                include_descriptions=include_descriptions,
                 include_part_counts=include_part_counts,
             )
 

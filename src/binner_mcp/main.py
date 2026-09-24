@@ -52,6 +52,12 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Delimiter for hierarchical category paths (default: '::')",
     )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Optional path to write log output in addition to sys.stderr",
+    )
     return parser.parse_args(args)
 
 
@@ -65,8 +71,9 @@ def main() -> int:
         host_override=args.host,
         port_override=args.port,
         category_delimiter_override=args.category_delimiter,
+        log_file_override=args.log_file,
     )
-    logger = setup_logging(level=config.log_level)
+    logger = setup_logging(level=config.log_level, log_file=config.log_file)
     logger.info("Starting Binner MCP Server (transport=%s)...", config.transport)
 
     from binner_mcp.mcp.server import BinnerMCPServer

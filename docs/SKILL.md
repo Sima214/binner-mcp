@@ -20,9 +20,9 @@ flowchart TD
 - Call `get_system_status` to verify backend connectivity, retrieve the installed Binner version, and check global inventory metrics (total parts, valuation, low-stock count).
 
 ### Step 2: Part Discovery & Inspection
-- Discover existing parts in local inventory using `list_parts` with query keywords, category path, bin number, location, package type, manufacturer, or low-stock filters.
-- Browse category hierarchy using `list_part_types` (returns hierarchical tree of categories with IDs and names).
-- For deep technical evaluation, pass candidate identifiers (`part_ids` or `part_numbers`) to `get_parts` to retrieve complete electrical values, pinouts, KiCad symbols, supplier links, storage bins, category paths, and datasheets.
+- Discover existing parts in local inventory using `list_parts` with query keywords, category path, bin number, location, package type, manufacturer, low-stock filters, or specific projected `fields` (e.g. `fields=['quantity', 'location', 'bin_number']`).
+- Browse category hierarchy using `list_part_types` with lightweight node output (`id`, `name`, and `children`). Use `depth` (e.g. `depth=1` for top-level categories), `root_id`, or `root_name` to scope subtrees with minimal LLM context footprint. Pass `include_descriptions=True` only when verbose definitions are needed.
+- For deep technical evaluation, pass candidate identifiers (`part_ids` or `part_numbers`) to `get_parts` to retrieve complete electrical values, pinouts, KiCad symbols, supplier links, storage bins, category paths, and datasheets. Supports optional `fields` projection for exact parity with `list_parts`.
 
 ### Step 3: Part Lifecycle / Cataloging & Ingestion
 - Persist categories via `save_part_types` (`name`, optional `parent_part_type_id`, `description`).
@@ -124,25 +124,17 @@ flowchart TD
 ---
 
 ### 2.4 BOM Part (Project Part Assignment)
+When inspecting project BOMs via `get_projects(include_bom=True)`, line items are delivered in a normalized, lean structure pruned of duplicate nested part objects:
 
-| Field Name | Type | Constraints & Defaults | Description |
-| :--- | :--- | :--- | :--- |
-| `project_part_assignment_id` / `projectPartAssignmentId` | `int` | Auto-generated identity | Unique primary key for the BOM assignment line item. |
-| `project_id` / `projectId` | `int` | **Required**, foreign key | Target project ID. |
-| `part_id` / `partId` | `int` | Optional, foreign key | Reference to inventory part (`Part.part_id`). |
-| `part_number` / `partNumber` | `string` | Optional (or `part_id`) | Component part number in inventory. |
-| `part_name` / `partName` | `string` | Optional | Text label used if the part is not cataloged in local inventory. |
-| `quantity` | `int` | $\ge 1$, default: `1` | Quantity required **per individual board/unit**. |
-| `quantity_available` / `quantityAvailable` | `int` | Read-only | Snapshot of current stock available for this line item. |
-| `reference_id` / `reference_designator` | `string` | Optional (e.g. `"R1, R2, R7"`, `"U3"`) | Silkscreen component reference designators on the PCB. |
-| `schematic_reference_id` / `schematicReferenceId` | `string` | Optional | Schematic sheet reference designator. |
-| `custom_description` / `customDescription` | `string` | Optional | Project-specific notes for this line item. |
-| `cost` | `float` | $\ge 0.0$, default: `0.0` | Line item unit cost. |
-| `currency` | `string` | Optional | Line item currency code. |
-| `symbol_name` / `symbolName` | `string` | Optional | Schematic symbol override for this project assignment. |
-| `footprint_name` / `footprintName` | `string` | Optional | Footprint override for this project assignment. |
-| `adjust_stock_delta` | `int` | Mutation-only, optional | Additive inventory delta applied when updating BOM line item (`+=` / `-=`). |
-| `remove` | `bool` | Mutation-only, default: `false` | If `true`, removes the line item from the BOM. |
+| Field Name | Type | Description |
+| :--- | :--- | :--- |
+| `assignment_id` | `int` | Primary key of the project part assignment. |
+| `part_id` | `int` | Internal database part ID. |
+| `part_number` | `string` | Unique component part number / MPN. |
+| `quantity` | `int` | Count required per board unit. |
+| `reference_designator` | `string` | Silkscreen reference designators (e.g. `"D1, D2"`, `"R1"`). |
+| `stock_on_hand` | `int` | Physical count currently available in inventory. |
+| `package_type` | `string` | Component package / footprint (e.g. `"0805"`). |
 
 ---
 
@@ -161,12 +153,17 @@ flowchart TD
    - All batch mutation tools (`save_parts`, `delete_parts`, `save_projects`, `delete_projects`, `save_part_types`, `delete_part_types`, `manage_bom_parts`) follow first retry, then report, never rollback.
    - Transient network failures are retried once immediately. Permanent failures are reported with specific errors in `failed`, while already committed items remain persistent.
 
-4. **Category Path & Tree Representation:**
-   - Category strings can be supplied as leaf names (`"SMD"`) or delimited paths (`"Passives::Resistors::SMD"`, `"Passives > Resistors > SMD"`, `"Passives#Resistors#SMD"`).
+4. **Category Tree Representation & LLM Context Efficiency:**
+   - Category strings in `save_parts` can be supplied as leaf names (`"SMD"`) or delimited paths (`"Passives::Resistors::SMD"`).
    - If intermediate or leaf categories do not exist, Binner creates them in order.
-   - `list_part_types` returns the full category tree with numeric IDs and names. Part counts are omitted by default for performance (`include_counts=False`).
+   - `list_part_types` outputs a lightweight tree (`id`, `name`, and non-empty `children`).
+   - Restrict scope using `depth` (e.g. `depth=1`), `root_id`, or `root_name` to prevent context bloating.
 
-5. **Identifier Resolution:**
+5. **Identifier Resolution & Field Projections:**
    - Parts can be addressed by `part_number` (case-insensitive string) or `part_id` (integer).
-   - In `save_parts`, target categories can be specified via numeric `part_type_id` (integer) or `part_type` (path string).
+   - Both `list_parts` and `get_parts` support `fields` projection (e.g. `fields=['quantity', 'bin_number']`) to return only necessary properties.
    - Projects can be addressed by `name` or `project_id`.
+
+6. **File Logging:**
+   - Optional file logging can be configured via `--log-file <path>`, `BINNER_LOG_FILE` environment variable, or `log_file` in `binnermcp_config.json`.
+   - Stdio transport on `sys.stdout` remains strictly protected for JSON-RPC message framing.

@@ -114,14 +114,64 @@ def get_parts_sync(
     category_cache: Dict[int, str],
     part_numbers: Optional[List[str]] = None,
     part_ids: Optional[List[int]] = None,
+    fields: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Batched component inspection for 1 to N components.
+    Batched component inspection for 1 to N components with optional field projection.
 
     Retrieves full specifications, datasheets, supplier SKUs, and hierarchical category paths.
     """
     if not part_numbers and not part_ids:
         return {"parts": [], "not_found": []}
+
+    field_set = set(f.lower() for f in fields) if fields else None
+
+    def format_part_rec(part: Any) -> Dict[str, Any]:
+        category_path = category_cache.get(part.part_type_id) or part.part_type
+        if field_set is None:
+            return compact_payload({
+                "id": part.part_id,
+                "part_number": part.part_number,
+                "quantity": part.quantity,
+                "low_stock_threshold": part.low_stock_threshold,
+                "cost": part.cost,
+                "currency": part.currency,
+                "bin_number": part.bin_number,
+                "bin_number2": part.bin_number2,
+                "location": part.location,
+                "package_type": part.package_type,
+                "part_type": category_path,
+                "manufacturer": part.manufacturer,
+                "manufacturer_part_number": part.manufacturer_part_number,
+                "description": part.description,
+                "datasheet_url": part.datasheet_url,
+                "product_url": part.product_url,
+            })
+
+        projected: Dict[str, Any] = {
+            "id": part.part_id,
+            "part_number": part.part_number,
+        }
+        attr_map = {
+            "quantity": part.quantity,
+            "low_stock_threshold": part.low_stock_threshold,
+            "cost": part.cost,
+            "currency": part.currency,
+            "bin_number": part.bin_number,
+            "bin_number2": part.bin_number2,
+            "location": part.location,
+            "package_type": part.package_type,
+            "part_type": category_path,
+            "manufacturer": part.manufacturer,
+            "manufacturer_part_number": part.manufacturer_part_number,
+            "description": part.description,
+            "datasheet_url": part.datasheet_url,
+            "product_url": part.product_url,
+        }
+        for k, v in attr_map.items():
+            if k in field_set:
+                projected[k] = v
+        return compact_payload(projected)
 
     parts_found: List[Dict[str, Any]] = []
     not_found: List[str] = []
@@ -138,26 +188,7 @@ def get_parts_sync(
                     not_found.append(pn_clean)
                 else:
                     seen_ids.add(part.part_id)
-                    category_path = category_cache.get(part.part_type_id) or part.part_type
-                    rec = {
-                        "id": part.part_id,
-                        "part_number": part.part_number,
-                        "quantity": part.quantity,
-                        "low_stock_threshold": part.low_stock_threshold,
-                        "cost": part.cost,
-                        "currency": part.currency,
-                        "bin_number": part.bin_number,
-                        "bin_number2": part.bin_number2,
-                        "location": part.location,
-                        "package_type": part.package_type,
-                        "part_type": category_path,
-                        "manufacturer": part.manufacturer,
-                        "manufacturer_part_number": part.manufacturer_part_number,
-                        "description": part.description,
-                        "datasheet_url": part.datasheet_url,
-                        "product_url": part.product_url,
-                    }
-                    parts_found.append(compact_payload(rec))
+                    parts_found.append(format_part_rec(part))
 
         if part_ids:
             for pid in part_ids:
@@ -176,26 +207,7 @@ def get_parts_sync(
                     not_found.append(str(pid_int))
                 else:
                     seen_ids.add(part.part_id)
-                    category_path = category_cache.get(part.part_type_id) or part.part_type
-                    rec = {
-                        "id": part.part_id,
-                        "part_number": part.part_number,
-                        "quantity": part.quantity,
-                        "low_stock_threshold": part.low_stock_threshold,
-                        "cost": part.cost,
-                        "currency": part.currency,
-                        "bin_number": part.bin_number,
-                        "bin_number2": part.bin_number2,
-                        "location": part.location,
-                        "package_type": part.package_type,
-                        "part_type": category_path,
-                        "manufacturer": part.manufacturer,
-                        "manufacturer_part_number": part.manufacturer_part_number,
-                        "description": part.description,
-                        "datasheet_url": part.datasheet_url,
-                        "product_url": part.product_url,
-                    }
-                    parts_found.append(compact_payload(rec))
+                    parts_found.append(format_part_rec(part))
 
     return {
         "parts": parts_found,

@@ -14,7 +14,7 @@ from binner_mcp.api.models import (
     UpdateBomPartRequest,
     UpdateProjectRequest,
 )
-from binner_mcp.mcp.normalization import compact_payload
+from binner_mcp.mcp.normalization import compact_payload, format_lean_bom
 
 logger = logging.getLogger("binner_mcp.mcp.tools.projects")
 
@@ -25,9 +25,10 @@ def list_projects_sync(
     limit: int = 50,
     sort_by: str = "DateCreatedUtc",
     direction: str = "Descending",
+    query: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Search and list maker projects with pagination and metadata.
+    Search and list maker projects with pagination, keyword search, and metadata.
 
     Args:
         proxy: Authenticated Binner API proxy.
@@ -35,6 +36,7 @@ def list_projects_sync(
         limit: Max projects to return (1-500).
         sort_by: Column to sort by (default 'DateCreatedUtc').
         direction: 'Ascending' or 'Descending'.
+        query: Optional search keyword to filter projects by name or description.
     """
     limit = min(max(1, limit), 500)
     with proxy._lock:
@@ -44,6 +46,14 @@ def list_projects_sync(
             order_by=sort_by,
             direction=direction,
         )
+        if query:
+            q_clean = query.strip().lower()
+            projects = [
+                p for p in projects
+                if (p.name and q_clean in p.name.lower())
+                or (p.description and q_clean in p.description.lower())
+            ]
+
         return {
             "status": "success",
             "page": page,
@@ -114,7 +124,7 @@ def get_projects_sync(
                         }),
                     }
                     if include_bom:
-                        rec["bom"] = compact_payload(proxy.get_bom(project_id=project.project_id))
+                        rec["bom"] = format_lean_bom(proxy.get_bom(project_id=project.project_id))
                     projects_found.append(rec)
 
         if names:
@@ -139,7 +149,7 @@ def get_projects_sync(
                             }),
                         }
                         if include_bom:
-                            rec["bom"] = compact_payload(proxy.get_bom(project_id=project.project_id))
+                            rec["bom"] = format_lean_bom(proxy.get_bom(project_id=project.project_id))
                         projects_found.append(rec)
 
     return {

@@ -319,6 +319,43 @@ async def test_get_parts_batch(mock_proxy: MagicMock, mock_swarm: MagicMock) -> 
         assert "999" in data["not_found"]
 
 
+@pytest.mark.anyio
+async def test_get_parts_with_field_projection(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    part1 = PartStoredFilesResponse(
+        partId=42,
+        partNumber="NE555P",
+        quantity=15,
+        partTypeId=101,
+        binNumber="A1-04",
+        packageType="DIP-8",
+        location="Drawer 1",
+    )
+    mock_proxy.get_part_by_number.side_effect = lambda pn: part1 if pn == "NE555P" else None
+    mock_proxy.get_part_number_by_id.return_value = None
+    mock_proxy.get_part_by_id.return_value = None
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+    server._category_cache[101] = "Semiconductors::Timers"
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        result = await client.call_tool(
+            "get_parts",
+            {"part_numbers": ["NE555P"], "fields": ["quantity", "location"]},
+        )
+        assert not result.is_error
+        data = result.structured_content["result"]
+        parts = data["parts"]
+        assert len(parts) == 1
+        p = parts[0]
+        assert p["id"] == 42
+        assert p["part_number"] == "NE555P"
+        assert p["quantity"] == 15
+        assert p["location"] == "Drawer 1"
+        assert "package_type" not in p
+        assert "bin_number" not in p
+        assert "part_type" not in p
+
+
 # --- Zero-Side-Effects Failure & Mutation Tests ---
 
 @pytest.mark.anyio
@@ -697,7 +734,53 @@ async def test_list_part_types_tree_structure(mock_proxy: MagicMock, mock_swarm:
         resistor_node = next(n for n in tree if n["name"] == "Resistor")
         assert len(resistor_node["children"]) == 1
         assert resistor_node["children"][0]["name"] == "Through-Hole"
-        assert resistor_node["children"][0]["part_type_id"] == 2
+        assert resistor_node["children"][0]["id"] == 2
+
+
+@pytest.mark.anyio
+async def test_list_part_types_depth_and_root_scoping(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    mock_proxy.get_part_types.return_value = [
+        PartTypeResponse(partTypeId=1, name="Resistor", parentPartTypeId=None),
+        PartTypeResponse(partTypeId=2, name="Through-Hole", parentPartTypeId=1),
+        PartTypeResponse(partTypeId=3, name="Metal-Film", parentPartTypeId=2),
+        PartTypeResponse(partTypeId=4, name="Capacitor", parentPartTypeId=None),
+    ]
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # 1. depth=1 should omit children completely
+        res1 = await client.call_tool("list_part_types", {"depth": 1})
+        assert not res1.is_error
+        tree1 = res1.structured_content["result"]["tree"]
+        assert len(tree1) == 2
+        assert "children" not in tree1[0]
+        assert "children" not in tree1[1]
+
+        # 2. depth=2 should allow 1 level of children
+        res2 = await client.call_tool("list_part_types", {"depth": 2})
+        assert not res2.is_error
+        tree2 = res2.structured_content["result"]["tree"]
+        res_node = next(n for n in tree2 if n["name"] == "Resistor")
+        assert len(res_node["children"]) == 1
+        assert res_node["children"][0]["name"] == "Through-Hole"
+        assert "children" not in res_node["children"][0]
+
+        # 3. root_name scoping
+        res3 = await client.call_tool("list_part_types", {"root_name": "Resistor"})
+        assert not res3.is_error
+        tree3 = res3.structured_content["result"]["tree"]
+        assert len(tree3) == 1
+        assert tree3[0]["name"] == "Resistor"
+
+        # 4. root_id scoping
+        res4 = await client.call_tool("list_part_types", {"root_id": 2})
+        assert not res4.is_error
+        tree4 = res4.structured_content["result"]["tree"]
+        assert len(tree4) == 1
+        assert tree4[0]["id"] == 2
+        assert tree4[0]["name"] == "Through-Hole"
+        assert len(tree4[0]["children"]) == 1
+        assert tree4[0]["children"][0]["name"] == "Metal-Film"
 
 
 @pytest.mark.anyio
@@ -736,15 +819,40 @@ async def test_projects_crud_tools(mock_proxy: MagicMock, mock_swarm: MagicMock)
     mock_proxy.get_projects.return_value = [proj]
     mock_proxy.create_project.return_value = proj
     mock_proxy.get_project.side_effect = lambda project_id=None, name=None: proj if project_id == 5 else None
+    mock_proxy.get_bom.return_value = {
+        "parts": [
+            {
+                "projectPartAssignmentId": 12,
+                "partId": 42,
+                "partNumber": "NE555P",
+                "quantity": 2,
+                "notes": "U1, U2",
+                "part": {
+                    "quantity": 100,
+                    "packageType": "DIP-8",
+                    "dateCreated": "0001-01-01T00:00:00Z",
+                },
+            }
+        ]
+    }
     mock_proxy.delete_project.return_value = True
 
     server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
 
     async with Client(server.mcp, raise_exceptions=True) as client:
-        # 1. List
+        # 1. List (all)
         list_res = await client.call_tool("list_projects", {})
         assert not list_res.is_error
         assert len(list_res.structured_content["result"]["projects"]) == 1
+
+        # 1b. List (filtered)
+        list_matched = await client.call_tool("list_projects", {"query": "Drone"})
+        assert not list_matched.is_error
+        assert len(list_matched.structured_content["result"]["projects"]) == 1
+
+        list_unmatched = await client.call_tool("list_projects", {"query": "Nonexistent"})
+        assert not list_unmatched.is_error
+        assert len(list_unmatched.structured_content["result"]["projects"]) == 0
 
         # 2. Save (create)
         save_res = await client.call_tool(
@@ -754,10 +862,23 @@ async def test_projects_crud_tools(mock_proxy: MagicMock, mock_swarm: MagicMock)
         assert not save_res.is_error
         assert save_res.structured_content["result"]["created_count"] == 1
 
-        # 3. Get
-        get_res = await client.call_tool("get_projects", {"project_ids": [5]})
+        # 3. Get with lean BOM
+        get_res = await client.call_tool("get_projects", {"project_ids": [5], "include_bom": True})
         assert not get_res.is_error
-        assert get_res.structured_content["result"]["projects"][0]["project"]["project_id"] == 5
+        proj_entry = get_res.structured_content["result"]["projects"][0]
+        assert proj_entry["project"]["project_id"] == 5
+        assert "bom" in proj_entry
+        assert proj_entry["bom"] == [
+            {
+                "assignment_id": 12,
+                "part_id": 42,
+                "part_number": "NE555P",
+                "quantity": 2,
+                "reference_designator": "U1, U2",
+                "stock_on_hand": 100,
+                "package_type": "DIP-8",
+            }
+        ]
 
         # 4. Delete
         del_res = await client.call_tool("delete_projects", {"project_ids": [5]})

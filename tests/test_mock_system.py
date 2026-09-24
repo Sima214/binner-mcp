@@ -109,3 +109,31 @@ def test_swarm_testapi(proxy: BinnerAPIProxy) -> None:
                 ],
             },
         )
+
+
+def test_setup_logging_file_handler(tmp_path) -> None:
+    import logging
+    from binner_mcp.common.logging import setup_logging
+
+    log_file = tmp_path / "test_binner.log"
+    logger = setup_logging(level="DEBUG", log_file=str(log_file))
+
+    # Verify handlers
+    root = logging.getLogger()
+    assert any(isinstance(h, logging.FileHandler) for h in root.handlers)
+    assert any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers)
+
+    # Emit test log
+    logger.info("Test log entry to file")
+
+    # Flush file handlers
+    for h in root.handlers:
+        if isinstance(h, logging.FileHandler):
+            h.flush()
+
+    assert log_file.exists()
+    content = log_file.read_text(encoding="utf-8")
+    assert "Test log entry to file" in content
+
+    # Clean up root handlers
+    root.handlers.clear()

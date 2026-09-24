@@ -147,6 +147,52 @@ def test_auto_token_refresh_on_401(proxy: BinnerAPIProxy) -> None:
         assert proxy.session.headers["Authorization"] == "Bearer new_refreshed_token_456"
 
 
+def test_auto_token_refresh_on_user_context_unauthorized_500(proxy: BinnerAPIProxy) -> None:
+    """Verify that a 500 containing UserContextUnauthorizedException triggers refresh-token and retries."""
+    proxy._is_logged_in = True
+    proxy.jwt_token = "expired_token"
+    proxy.session.headers["Authorization"] = "Bearer expired_token"
+    proxy.session.cookies.set("refreshToken", "mock_refresh_cookie")
+
+    resp_500 = MagicMock()
+    resp_500.status_code = 500
+    resp_500.ok = False
+    resp_500.text = "Unhandled Error! Binner.Global.Common.UserContextUnauthorizedException: Action requires valid user context.. Caller: GetProjectAsync:2035"
+
+    resp_refresh = MagicMock()
+    resp_refresh.status_code = 200
+    resp_refresh.ok = True
+    resp_refresh.json.return_value = {
+        "isAuthenticated": True,
+        "jwtToken": "refreshed_token_after_500",
+    }
+
+    resp_retry = MagicMock()
+    resp_retry.status_code = 200
+    resp_retry.ok = True
+    resp_retry.json.return_value = {
+        "projectId": 81,
+        "name": "QA_TEST_PROJECT",
+    }
+
+    def mock_request(method: str, url: str, **kwargs):
+        if url.endswith("/api/authentication/refresh-token"):
+            return resp_refresh
+        if "/api/project" in url:
+            auth_header = proxy.session.headers.get("Authorization")
+            if auth_header == "Bearer refreshed_token_after_500":
+                return resp_retry
+            return resp_500
+        raise ValueError(f"Unexpected URL: {url}")
+
+    with patch.object(proxy.session, "request", side_effect=mock_request):
+        project = proxy.get_project(project_id=81)
+        assert project is not None
+        assert project.project_id == 81
+        assert proxy.jwt_token == "refreshed_token_after_500"
+        assert proxy.session.headers["Authorization"] == "Bearer refreshed_token_after_500"
+
+
 def test_token_refresh_fallback_to_login(proxy: BinnerAPIProxy) -> None:
     """When refresh cookie is absent, proxy falls back to explicit login credentials."""
     proxy._is_logged_in = True

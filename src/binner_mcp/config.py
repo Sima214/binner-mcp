@@ -26,6 +26,10 @@ class BinnerConfig(BaseModel):
         default="::",
         description="Delimiter for hierarchical category paths (e.g. '::' or '#')",
     )
+    log_file: Optional[str] = Field(
+        default=None,
+        description="Optional path to write log output in addition to sys.stderr",
+    )
 
 
 def find_config_file(explicit_path: Optional[str] = None) -> Optional[Path]:
@@ -79,13 +83,14 @@ def load_config(
     host_override: Optional[str] = None,
     port_override: Optional[int] = None,
     category_delimiter_override: Optional[str] = None,
+    log_file_override: Optional[str] = None,
 ) -> BinnerConfig:
     """
     Load configuration with strict precedence:
     1. Built-in defaults
     2. binnermcp_config.json (if found)
     3. Environment variables (BINNER_BASE_URL, BINNER_USERNAME, BINNER_PASSWORD, BINNER_LOG_LEVEL,
-       BINNER_MCP_TRANSPORT, BINNER_MCP_HOST, BINNER_MCP_PORT, BINNER_CATEGORY_DELIMITER)
+       BINNER_MCP_TRANSPORT, BINNER_MCP_HOST, BINNER_MCP_PORT, BINNER_CATEGORY_DELIMITER, BINNER_LOG_FILE)
     4. Explicit overrides (e.g. CLI arguments)
     """
     config_data: dict[str, Any] = {}
@@ -117,6 +122,8 @@ def load_config(
         config_data["host"] = env_host
     if env_delim := os.environ.get("BINNER_CATEGORY_DELIMITER"):
         config_data["category_delimiter"] = env_delim
+    if env_log_file := os.environ.get("BINNER_LOG_FILE"):
+        config_data["log_file"] = env_log_file
     if env_port := os.environ.get("BINNER_MCP_PORT"):
         try:
             config_data["port"] = int(env_port)
@@ -133,6 +140,8 @@ def load_config(
         config_data["port"] = port_override
     if category_delimiter_override is not None:
         config_data["category_delimiter"] = category_delimiter_override
+    if log_file_override is not None:
+        config_data["log_file"] = log_file_override
 
     if "log_level" in config_data and isinstance(config_data["log_level"], str):
         config_data["log_level"] = config_data["log_level"].upper()

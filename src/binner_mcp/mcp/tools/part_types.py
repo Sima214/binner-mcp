@@ -16,6 +16,10 @@ logger = logging.getLogger("binner_mcp.mcp.tools.part_types")
 
 def list_part_types_sync(
     proxy: BinnerAPIProxy,
+    depth: Optional[int] = None,
+    root_id: Optional[int] = None,
+    root_name: Optional[str] = None,
+    include_descriptions: bool = False,
     include_part_counts: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -23,43 +27,81 @@ def list_part_types_sync(
 
     Args:
         proxy: Authenticated Binner API proxy.
-        include_part_counts: If True, includes parts count per part type. Defaults to False.
+        depth: Optional maximum depth of tree recursion (e.g. 1 for top-level only).
+        root_id: Optional root category ID to scope the tree to a single subtree.
+        root_name: Optional root category name to scope the tree to a single subtree.
+        include_descriptions: If True, includes description field per node (default False).
+        include_part_counts: If True, includes parts count per part type (default False).
     """
     with proxy._lock:
         all_types = proxy.get_part_types()
 
-        # Build node dictionary
-        nodes: Dict[int, Dict[str, Any]] = {}
+        type_map: Dict[int, Any] = {}
+        children_map: Dict[int, List[int]] = {}
+        for pt in all_types:
+            if pt.part_type_id is not None:
+                type_map[pt.part_type_id] = pt
+                children_map.setdefault(pt.part_type_id, [])
+
+        root_ids: List[int] = []
         for pt in all_types:
             if pt.part_type_id is None:
                 continue
+            parent_id = pt.parent_part_type_id
+            if parent_id is not None and parent_id in type_map:
+                children_map[parent_id].append(pt.part_type_id)
+            else:
+                root_ids.append(pt.part_type_id)
+
+        target_roots = root_ids
+        if root_id is not None:
+            if root_id in type_map:
+                target_roots = [root_id]
+            else:
+                return {
+                    "status": "error",
+                    "error": "Part type not found",
+                    "details": [f"Root part type ID {root_id} does not exist."],
+                }
+        elif root_name is not None:
+            r_name_clean = root_name.strip().lower()
+            matched_id = next(
+                (tid for tid, pt in type_map.items() if pt.name and pt.name.lower() == r_name_clean),
+                None,
+            )
+            if matched_id is not None:
+                target_roots = [matched_id]
+            else:
+                return {
+                    "status": "error",
+                    "error": "Part type not found",
+                    "details": [f"Root part type name '{root_name}' does not exist."],
+                }
+
+        def build_node(pt_id: int, current_depth: int) -> Dict[str, Any]:
+            pt = type_map[pt_id]
             node: Dict[str, Any] = {
-                "part_type_id": pt.part_type_id,
+                "id": pt.part_type_id,
                 "name": pt.name,
-                "children": [],
             }
-            if pt.description:
+            if include_descriptions and pt.description:
                 node["description"] = pt.description
             if include_part_counts and pt.parts is not None:
                 node["parts_count"] = pt.parts
-            nodes[pt.part_type_id] = node
 
-        # Assemble hierarchical tree
-        root_nodes: List[Dict[str, Any]] = []
-        for pt in all_types:
-            if pt.part_type_id is None:
-                continue
-            node = nodes[pt.part_type_id]
-            parent_id = pt.parent_part_type_id
-            if parent_id is not None and parent_id in nodes:
-                nodes[parent_id]["children"].append(node)
-            else:
-                root_nodes.append(node)
+            child_ids = children_map.get(pt_id, [])
+            if child_ids and (depth is None or current_depth < depth):
+                node["children"] = [
+                    build_node(cid, current_depth + 1)
+                    for cid in child_ids
+                ]
+            return node
 
+        tree = [build_node(rid, 1) for rid in target_roots]
         return {
             "status": "success",
-            "total_types": len(nodes),
-            "tree": root_nodes,
+            "total_types": len(type_map),
+            "tree": tree,
         }
 
 

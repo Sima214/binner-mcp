@@ -57,6 +57,7 @@ class BaseBinnerClient(BaseHttpClient):
         self.tokens: Optional[AuthenticatedTokens] = None
         self._is_logged_in: bool = False
         self.__current_auto_login: bool = True
+        # self._last_auth_time: float = 0.0
 
     @property
     def is_logged_in(self) -> bool:
@@ -89,12 +90,22 @@ class BaseBinnerClient(BaseHttpClient):
         if super_resp is not None:
             return super_resp
 
+        is_unauth_error = response.status_code == 401 or (
+            response.status_code == 500
+            and (
+                "UserContextUnauthorizedException" in response.text
+                or "requires valid user context" in response.text
+            )
+        )
         if (
-            response.status_code == 401
+            is_unauth_error
             and self.__current_auto_login
             and not path.startswith("api/authentication")
         ):
-            logger.warning("Access token expired (401). Initiating token refresh...")
+            logger.warning(
+                "Access token expired or unauthorized user context (%d). Initiating token refresh...",
+                response.status_code,
+            )
             if self._handle_token_refresh():
                 log_trace(logger, "Retrying request %s %s after token refresh", method, url)
                 retry_resp = self.session.request(method, url, timeout=timeout, **kwargs)
@@ -112,7 +123,13 @@ class BaseBinnerClient(BaseHttpClient):
         if response.status_code == 404:
             raise BinnerNotFoundError(f"Resource not found: {path}", details=response.text)
 
-        if response.status_code in (401, 403):
+        if response.status_code in (401, 403) or (
+            response.status_code == 500
+            and (
+                "UserContextUnauthorizedException" in response.text
+                or "requires valid user context" in response.text
+            )
+        ):
             self._is_logged_in = False
             raise BinnerAuthError(f"Authentication failure ({response.status_code}) on {path}: {response.text}")
 
@@ -207,6 +224,7 @@ class BaseBinnerClient(BaseHttpClient):
                 self.tokens = tokens
                 self.session.headers.update({"Authorization": f"Bearer {self.jwt_token}"})
                 self._is_logged_in = True
+                # self._last_auth_time = time.time()
                 logger.info("Authentication successful for user '%s'", self.username)
                 return tokens
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as ce:
@@ -264,6 +282,7 @@ class BaseBinnerClient(BaseHttpClient):
                         self.tokens = tokens
                         self.session.headers.update({"Authorization": f"Bearer {self.jwt_token}"})
                         self._is_logged_in = True
+                        # self._last_auth_time = time.time()
                         logger.debug("Access token refreshed successfully.")
                         return True
 

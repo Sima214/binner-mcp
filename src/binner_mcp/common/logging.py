@@ -51,12 +51,16 @@ def sanitize_for_trace(data: Any) -> Any:
     return data
 
 
-def setup_logging(level: Optional[str] = None) -> logging.Logger:
+def setup_logging(
+    level: Optional[str] = None,
+    log_file: Optional[str] = None,
+) -> logging.Logger:
     """
     Configure lean, protocol-safe logging.
 
-    All output is strictly directed to sys.stderr to avoid polluting
+    All terminal output is strictly directed to sys.stderr to avoid polluting
     sys.stdout, which is reserved for MCP JSON-RPC stdio transport.
+    Optionally attaches a FileHandler if log_file is specified.
 
     Log Levels:
       - INFO:    App lifecycle events (server startup, shutdown, ready state)
@@ -81,13 +85,22 @@ def setup_logging(level: Optional[str] = None) -> logging.Logger:
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
 
-    handler = logging.StreamHandler(stream=sys.stderr)
-    handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
+    stderr_handler = logging.StreamHandler(stream=sys.stderr)
+    stderr_handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
 
     root_logger = logging.getLogger()
     root_logger.setLevel(numeric_level)
     root_logger.handlers.clear()
-    root_logger.addHandler(handler)
+    root_logger.addHandler(stderr_handler)
+
+    target_log_file = log_file or os.environ.get("BINNER_LOG_FILE")
+    if target_log_file:
+        from pathlib import Path
+        log_path = Path(target_log_file).expanduser().resolve()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(str(log_path), encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter(fmt=log_format, datefmt=date_format))
+        root_logger.addHandler(file_handler)
 
     logger = logging.getLogger("binner_mcp")
     return logger
