@@ -12,7 +12,7 @@ This document details the internal design patterns, concurrency controls, token 
 +-------------------------------------------------------------------------------+
 |                       Layer 2: MCP Protocol Binding Layer                     |
 |                                                                               |
-|  - MCP Server Setup (stdio / sse)                                             |
+|  - MCP Server Setup (stdio / http / sse)                                      |
 |  - Registered Tools (Inventory queries, part updates, BOM assignments)        |
 |  - Registered Resources (Inventory snapshots, part detail streams)            |
 |  - Curated Prompts (Inventory audit, procurement templates)                   |
@@ -24,7 +24,7 @@ This document details the internal design patterns, concurrency controls, token 
 |                                                                               |
 |  - BinnerAPIProxy (Requests Session, connection pooling, cookie jar)          |
 |  - SwarmClient (Cloud datasheet and pinout resolution)                        |
-|  - Domain Components (Parts, Projects, Taxonomy, System, Data, Cache)         |
+|  - Domain Components (Parts, Projects, Categories, System, Data, Cache)       |
 |  - In-Memory Part Identity Cache (_part_id_to_number, _part_number_to_id)     |
 |  - Pydantic v2 Models (Dual snake_case & camelCase serialization)             |
 +-------------------------------------------------------------------------------+

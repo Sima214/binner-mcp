@@ -44,7 +44,7 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         "--port",
         type=int,
         default=None,
-        help="Port for SSE transport (default: 8345)",
+        help="Port for HTTP/SSE transport (default: 8000)",
     )
     parser.add_argument(
         "--category-delimiter",

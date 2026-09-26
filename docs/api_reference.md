@@ -164,7 +164,7 @@ BinnerAPIProxy(
 
 ---
 
-### Category Taxonomies
+### Category Hierarchy & Part Types
 
 #### `get_part_types(parent: Optional[str] = None) -> List[PartTypeResponse]`
 * **Route:** `GET /api/parttype/list?parent=...` (if parent specified) or `GET /api/parttype/all`
@@ -321,11 +321,15 @@ BaseProxyError
 
 | Field | CLI Flag | Env Variable | Default | Description |
 |---|---|---|---|---|
-| `base_url` | None | `BINNER_BASE_URL` | `http://localhost:8090` | Root URL of Binner instance |
-| `username` | None | `BINNER_USERNAME` | `admin` | Authentication username |
-| `password` | None | `BINNER_PASSWORD` | `admin` | Authentication password |
+| `base_url` | — | `BINNER_BASE_URL` | `http://localhost:8090` | Root URL of local Binner instance |
+| `username` | — | `BINNER_USERNAME` | `admin` | Authentication username |
+| `password` | — | `BINNER_PASSWORD` | `admin` | Authentication password |
 | `log_level` | `--log-level` | `BINNER_LOG_LEVEL` | `INFO` | Logging level (`TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `transport` | `--transport` | `BINNER_MCP_TRANSPORT` | `stdio` | MCP transport mode (`stdio` or `sse`) |
-| `host` | `--host` | `BINNER_MCP_HOST` | `127.0.0.1` | SSE host bind address |
-| `port` | `--port` | `BINNER_MCP_PORT` | `8000` | SSE listening port |
+| `transport` | `--transport` | `BINNER_MCP_TRANSPORT` | `stdio` | MCP transport mode (`stdio`, `http`, or `sse`) |
+| `host` | `--host` | `BINNER_MCP_HOST` | `127.0.0.1` | Bind address for HTTP / SSE transport |
+| `port` | `--port` | `BINNER_MCP_PORT` | `8000` | Port for HTTP / SSE transport |
+| `category_delimiter` | `--category-delimiter` | `BINNER_CATEGORY_DELIMITER` | `::` | Delimiter for category hierarchy paths |
+| `log_file` | `--log-file` | `BINNER_LOG_FILE` | `None` | Optional path to write log output in addition to stderr |
+| `retry_delay` | `--retry-delay` | `BINNER_RETRY_DELAY` | `3.0` | Delay in seconds between transient retry attempts |
+| `retry_count` | `--retry-count` | `BINNER_RETRY_COUNT` | `1` | Max retry attempts for transient network errors |
 | config file | `--config` | `BINNER_MCP_CONFIG` | `./binnermcp_config.json` | Explicit path to JSON configuration |

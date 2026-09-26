@@ -216,7 +216,7 @@ print(f"Deleted successfully: {success}")
 
 ---
 
-## 6. Category Taxonomies & Part Types
+## 6. Category Hierarchy & Part Types
 
 ```python
 # 1. Fetch all top-level categories
