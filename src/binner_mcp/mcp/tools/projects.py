@@ -14,7 +14,11 @@ from binner_mcp.api.models import (
     UpdateBomPartRequest,
     UpdateProjectRequest,
 )
+from binner_mcp.common.exceptions import BaseProxyError
+from binner_mcp.common.http import RETRY_DELAY, is_transient_network_error
+from binner_mcp.config import DEFAULT_RETRY_DELAY, DEFAULT_RETRY_COUNT
 from binner_mcp.mcp.normalization import compact_payload, format_lean_bom
+from binner_mcp.mcp.validation import normalize_batch_input
 
 logger = logging.getLogger("binner_mcp.mcp.tools.projects")
 
@@ -162,6 +166,8 @@ def get_projects_sync(
 def save_projects_sync(
     proxy: BinnerAPIProxy,
     projects: List[Dict[str, Any]],
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
 ) -> Dict[str, Any]:
     """
     Batch create or update maker projects with first-retry-then-report semantics (never rollback).
@@ -170,37 +176,27 @@ def save_projects_sync(
         proxy: Authenticated Binner API proxy.
         projects: List of project records with 'name', optional 'description',
                   optional 'project_id' (for updates), optional 'archived'.
+        retry_delay: Delay in seconds between retries upon transient network errors.
+        retry_count: Maximum number of retries upon transient network errors.
     """
-    if not projects or not isinstance(projects, list):
-        return {
-            "status": "error",
-            "error": "Validation failed",
-            "details": ["'projects' must be a non-empty list of project records."],
-        }
-
-    validation_errors: List[str] = []
-    for i, item in enumerate(projects):
-        if not isinstance(item, dict):
-            validation_errors.append(f"Item {i}: not a valid dictionary.")
-            continue
-        pid = item.get("project_id")
-        name = item.get("name")
-        if pid is None and (not name or not str(name).strip()):
-            validation_errors.append(f"Item {i}: 'name' is required when creating a new project.")
-
-    if validation_errors:
-        return {
-            "status": "error",
-            "error": "Validation failed",
-            "details": validation_errors,
-        }
+    normalized_projects, err_resp = normalize_batch_input(projects, "projects")
+    if err_resp:
+        return err_resp
 
     created: List[Dict[str, Any]] = []
     updated: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
 
     with proxy._lock:
-        for i, item in enumerate(projects):
+        for i, item in enumerate(normalized_projects):
+            if not isinstance(item, dict):
+                failed.append({
+                    "item": item,
+                    "error": f"Item {i}: not a valid dictionary.",
+                    "retries": 0,
+                })
+                continue
+
             pid = item.get("project_id")
             name = str(item["name"]).strip() if item.get("name") else None
             desc = item.get("description")
@@ -208,10 +204,10 @@ def save_projects_sync(
 
             is_update = False
             target_id: Optional[int] = None
+
             if pid is not None:
                 try:
                     target_id = int(pid)
-                    is_update = True
                 except (ValueError, TypeError):
                     failed.append({
                         "item": item,
@@ -219,17 +215,37 @@ def save_projects_sync(
                         "retries": 0,
                     })
                     continue
+
+                existing_proj = proxy.get_project(project_id=target_id)
+                if not existing_proj:
+                    failed.append({
+                        "item": item,
+                        "error": f"Project with project_id {target_id} does not exist in inventory",
+                        "retries": 0,
+                    })
+                    continue
+
+                is_update = True
+                if not name:
+                    name = existing_proj.name
             elif name:
-                existing = proxy.get_project(name=name)
-                if existing:
-                    target_id = existing.project_id
+                existing_proj = proxy.get_project(name=name)
+                if existing_proj:
+                    target_id = existing_proj.project_id
                     is_update = True
+            else:
+                failed.append({
+                    "item": item,
+                    "error": f"Item {i}: 'name' is required when creating a new project.",
+                    "retries": 0,
+                })
+                continue
 
             success = False
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     if is_update and target_id is not None:
                         req = UpdateProjectRequest(
@@ -260,12 +276,15 @@ def save_projects_sync(
                         }))
                         success = True
                         break
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not success:
                 failed.append({
@@ -293,6 +312,8 @@ def delete_projects_sync(
     proxy: BinnerAPIProxy,
     project_ids: Optional[List[int]] = None,
     names: Optional[List[str]] = None,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
 ) -> Dict[str, Any]:
     """
     Batch delete maker projects by ID or name with first-retry-then-report semantics (never rollback).
@@ -301,6 +322,8 @@ def delete_projects_sync(
         proxy: Authenticated Binner API proxy.
         project_ids: Numeric project IDs to delete.
         names: Project names to delete.
+        retry_delay: Delay in seconds between retries upon transient network errors.
+        retry_count: Maximum number of retries upon transient network errors.
     """
     if not project_ids and not names:
         return {
@@ -351,7 +374,7 @@ def delete_projects_sync(
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     ok = proxy.delete_project(pid)
                     if ok:
@@ -360,16 +383,17 @@ def delete_projects_sync(
                         break
                     else:
                         last_err = "Backend returned unsuccessful status for deletion"
-                        retries = attempt + 1
-                        if attempt == 0:
-                            time.sleep(0.2)
-                            continue
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                        retries = 0
+                        break
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not success:
                 failed.append({
@@ -396,6 +420,8 @@ def consume_project_bom_sync(
     project_id: Optional[int] = None,
     name: Optional[str] = None,
     build_quantity: int = 1,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
 ) -> Dict[str, Any]:
     """
     Deduct inventory stock for assembling board units of a maker project's BOM.
@@ -408,6 +434,8 @@ def consume_project_bom_sync(
         project_id: Numeric project ID to consume for.
         name: Project name to consume for.
         build_quantity: Number of complete board units to assemble (>= 1).
+        retry_delay: Delay in seconds between retries upon transient network errors.
+        retry_count: Maximum number of retries upon transient network errors.
     """
     if build_quantity < 1:
         return {
@@ -492,7 +520,7 @@ def consume_project_bom_sync(
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     updated = proxy.update_quantity(
                         part_id=item["part_id"],
@@ -507,12 +535,15 @@ def consume_project_bom_sync(
                     })
                     success = True
                     break
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not success:
                 failed_deductions.append({
@@ -538,6 +569,8 @@ def manage_bom_parts_sync(
     proxy: BinnerAPIProxy,
     project_id: int,
     parts: List[Dict[str, Any]],
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
 ) -> Dict[str, Any]:
     """
     Batched BOM line item operations for a project with first-retry-then-report semantics (never rollback).
@@ -548,6 +581,8 @@ def manage_bom_parts_sync(
         proxy: Authenticated Binner API proxy.
         project_id: Target project ID.
         parts: BOM items with 'part_number'/'part_id', 'quantity', 'reference_designator', optional 'remove'.
+        retry_delay: Delay in seconds between retries upon transient network errors.
+        retry_count: Maximum number of retries upon transient network errors.
     """
     with proxy._lock:
         project = proxy.get_project(project_id=project_id)
@@ -558,12 +593,9 @@ def manage_bom_parts_sync(
                 "details": [f"Project ID {project_id} does not exist."],
             }
 
-        if not parts or not isinstance(parts, list):
-            return {
-                "status": "error",
-                "error": "Validation failed",
-                "details": ["'parts' must be a non-empty list of BOM items."],
-            }
+        normalized_parts, err_resp = normalize_batch_input(parts, "parts")
+        if err_resp:
+            return err_resp
 
         bom = proxy.get_bom(project_id=project_id)
         assignments = bom.get("parts") or bom.get("Parts") or []
@@ -582,7 +614,7 @@ def manage_bom_parts_sync(
         errors: List[str] = []
         planned_ops: List[Dict[str, Any]] = []
 
-        for i, item in enumerate(parts):
+        for i, item in enumerate(normalized_parts):
             if not isinstance(item, dict):
                 errors.append(f"Item {i} is not a valid dictionary.")
                 continue
@@ -681,7 +713,7 @@ def manage_bom_parts_sync(
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     if op["op"] == "remove":
                         proxy.delete_bom_part(ids=op["assignment_id"], project_id=project_id)
@@ -691,6 +723,8 @@ def manage_bom_parts_sync(
                             UpdateBomPartRequest(
                                 projectPartAssignmentId=op["assignment_id"],
                                 projectId=project_id,
+                                part_id=op.get("part_id"),
+                                part_name=op.get("part_number"),
                                 quantity=op["quantity"],
                                 notes=op["reference_designator"],
                             )
@@ -716,12 +750,15 @@ def manage_bom_parts_sync(
                         )
                     op_success = True
                     break
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not op_success:
                 failed.append({

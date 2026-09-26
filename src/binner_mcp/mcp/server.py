@@ -9,11 +9,22 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.utilities.func_metadata import ArgModelBase
+
+# Enforce strict rejection of unknown arguments across all MCP tools
+ArgModelBase.model_config["extra"] = "forbid"
 
 from binner_mcp.api.client import BinnerAPIProxy
 from binner_mcp.api.exceptions import BinnerError
 from binner_mcp.config import BinnerConfig, load_config
+from binner_mcp.mcp.categories import CategoryResolver
 from binner_mcp.mcp.normalization import compact_payload
+from binner_mcp.mcp.schemas import (
+    BomPartInput,
+    PartSaveInput,
+    PartTypeSaveInput,
+    ProjectSaveInput,
+)
 from binner_mcp.mcp.tools.cloud import lookup_cloud_parts_sync
 from binner_mcp.mcp.tools.inventory import (
     delete_parts_sync,
@@ -67,6 +78,9 @@ class BinnerMCPServer:
         self._category_cache: Dict[int, str] = {}
         self._category_name_to_id: Dict[str, int] = {}
         self.category_delimiter: str = self.config.category_delimiter
+        self.category_resolver = CategoryResolver(delimiter=self.category_delimiter)
+        self.retry_delay: float = self.config.retry_delay
+        self.retry_count: int = self.config.retry_count
 
         # Dedicated single-thread executor to strictly serialize all sync proxy operations
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -155,6 +169,7 @@ class BinnerMCPServer:
                 limit=limit,
                 sort_by=sort_by,
                 direction=direction,
+                category_resolver=self.category_resolver,
             )
 
         @self.mcp.tool()
@@ -182,13 +197,14 @@ class BinnerMCPServer:
 
         @self.mcp.tool()
         async def save_parts(
-            parts: List[Dict[str, Any]],
+            parts: List[PartSaveInput],
         ) -> Dict[str, Any]:
             """
             Batch create or update parts. Each item requires 'part_number'.
 
             Args:
                 parts: Part records with fields (e.g. 'part_number', 'quantity', 'cost', 'bin_number', 'part_type').
+                       'part_type' accepts a numeric ID (e.g. 10 or '10') or a category path/name string.
             """
             return await self._run_sync(
                 save_parts_sync,
@@ -197,6 +213,9 @@ class BinnerMCPServer:
                 self._category_name_to_id,
                 parts,
                 category_delimiter=self.category_delimiter,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
+                category_resolver=self.category_resolver,
             )
 
         @self.mcp.tool()
@@ -216,6 +235,8 @@ class BinnerMCPServer:
                 self.proxy,
                 part_numbers=part_numbers,
                 part_ids=part_ids,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
             )
 
         @self.mcp.tool()
@@ -270,7 +291,7 @@ class BinnerMCPServer:
 
         @self.mcp.tool()
         async def save_projects(
-            projects: List[Dict[str, Any]],
+            projects: List[ProjectSaveInput],
         ) -> Dict[str, Any]:
             """
             Batch create or update maker projects. Each item requires 'name' (for create) or 'project_id' (for update).
@@ -282,6 +303,8 @@ class BinnerMCPServer:
                 save_projects_sync,
                 self.proxy,
                 projects=projects,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
             )
 
         @self.mcp.tool()
@@ -301,6 +324,8 @@ class BinnerMCPServer:
                 self.proxy,
                 project_ids=project_ids,
                 names=names,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
             )
 
         @self.mcp.tool()
@@ -323,6 +348,8 @@ class BinnerMCPServer:
                 project_id=project_id,
                 name=name,
                 build_quantity=build_quantity,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
             )
 
         @self.mcp.tool()
@@ -351,11 +378,12 @@ class BinnerMCPServer:
                 root_name=root_name,
                 include_descriptions=include_descriptions,
                 include_part_counts=include_part_counts,
+                category_resolver=self.category_resolver,
             )
 
         @self.mcp.tool()
         async def save_part_types(
-            part_types: List[Dict[str, Any]],
+            part_types: List[PartTypeSaveInput],
         ) -> Dict[str, Any]:
             """
             Batch create or update part types.
@@ -369,6 +397,9 @@ class BinnerMCPServer:
                 self._category_cache,
                 self._category_name_to_id,
                 part_types=part_types,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
+                category_resolver=self.category_resolver,
             )
 
         @self.mcp.tool()
@@ -390,12 +421,15 @@ class BinnerMCPServer:
                 self._category_name_to_id,
                 part_type_ids=part_type_ids,
                 names=names,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
+                category_resolver=self.category_resolver,
             )
 
         @self.mcp.tool()
         async def manage_bom_parts(
             project_id: int,
-            parts: List[Dict[str, Any]],
+            parts: List[BomPartInput],
         ) -> Dict[str, Any]:
             """
             Batch allocate, update, or remove BOM line items for a project.
@@ -409,6 +443,8 @@ class BinnerMCPServer:
                 self.proxy,
                 project_id=project_id,
                 parts=parts,
+                retry_delay=self.retry_delay,
+                retry_count=self.retry_count,
             )
 
         @self.mcp.tool()
@@ -562,21 +598,11 @@ class BinnerMCPServer:
 
     def _warm_category_cache(self) -> None:
         """Fetch all part categories and build hierarchical category paths."""
-        try:
-            raw_types = self.proxy.get_part_types()
-            type_map = {t.part_type_id: t for t in raw_types if t.part_type_id is not None}
-            for tid, item in type_map.items():
-                parts = [item.name]
-                curr = item
-                while curr.parent_part_type_id and curr.parent_part_type_id in type_map:
-                    curr = type_map[curr.parent_part_type_id]
-                    parts.insert(0, curr.name)
-                category_path = self.category_delimiter.join(parts)
-                self._category_cache[tid] = category_path
-                self._category_name_to_id[item.name.lower()] = tid
-                self._category_name_to_id[category_path.lower()] = tid
-        except (requests.RequestException, BinnerError, ValueError, KeyError) as err:
-            logger.debug("Category cache pre-warming failed: %s", err)
+        self.category_resolver.warm_cache(
+            self.proxy,
+            category_cache=self._category_cache,
+            category_name_to_id=self._category_name_to_id,
+        )
 
     def close(self) -> None:
         """Shut down background executor and close HTTP sessions."""

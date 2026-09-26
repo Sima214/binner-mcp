@@ -9,7 +9,12 @@ import requests
 from binner_mcp.api.client import BinnerAPIProxy
 from binner_mcp.api.exceptions import BinnerError
 from binner_mcp.api.models import CreatePartTypeRequest, UpdatePartTypeRequest
+from binner_mcp.common.exceptions import BaseProxyError
+from binner_mcp.common.http import RETRY_DELAY, is_transient_network_error
+from binner_mcp.config import DEFAULT_RETRY_DELAY, DEFAULT_RETRY_COUNT
+from binner_mcp.mcp.categories import CategoryResolver
 from binner_mcp.mcp.normalization import compact_payload
+from binner_mcp.mcp.validation import normalize_batch_input, parse_int_id
 
 logger = logging.getLogger("binner_mcp.mcp.tools.part_types")
 
@@ -21,6 +26,7 @@ def list_part_types_sync(
     root_name: Optional[str] = None,
     include_descriptions: bool = False,
     include_part_counts: bool = False,
+    category_resolver: Optional[CategoryResolver] = None,
 ) -> Dict[str, Any]:
     """
     List all part types structured as a hierarchical tree focusing on part type IDs and names.
@@ -32,9 +38,12 @@ def list_part_types_sync(
         root_name: Optional root category name to scope the tree to a single subtree.
         include_descriptions: If True, includes description field per node (default False).
         include_part_counts: If True, includes parts count per part type (default False).
+        category_resolver: Optional CategoryResolver for hierarchy lookup and ambiguity detection.
     """
     with proxy._lock:
         all_types = proxy.get_part_types()
+        if category_resolver is not None:
+            category_resolver.update(all_types)
 
         type_map: Dict[int, Any] = {}
         children_map: Dict[int, List[int]] = {}
@@ -64,13 +73,28 @@ def list_part_types_sync(
                     "details": [f"Root part type ID {root_id} does not exist."],
                 }
         elif root_name is not None:
-            r_name_clean = root_name.strip().lower()
-            matched_id = next(
-                (tid for tid, pt in type_map.items() if pt.name and pt.name.lower() == r_name_clean),
-                None,
-            )
-            if matched_id is not None:
-                target_roots = [matched_id]
+            r_name_clean = root_name.strip()
+            if category_resolver is not None:
+                matches = category_resolver.find_matches(r_name_clean)
+            else:
+                matches = [
+                    (tid, pt.name)
+                    for tid, pt in type_map.items()
+                    if pt.name and pt.name.lower() == r_name_clean.lower()
+                ]
+
+            if len(matches) > 1:
+                candidates = ", ".join(f"ID {tid} '{path}'" for tid, path in matches)
+                return {
+                    "status": "error",
+                    "error": "Ambiguous root part type name",
+                    "details": [
+                        f"Root part type name '{root_name}' is ambiguous. Matches {len(matches)} categories: [{candidates}]. "
+                        "Please specify root_id or full category path."
+                    ],
+                }
+            elif len(matches) == 1:
+                target_roots = [matches[0][0]]
             else:
                 return {
                     "status": "error",
@@ -110,6 +134,9 @@ def save_part_types_sync(
     category_cache: Dict[int, str],
     category_name_to_id: Dict[str, int],
     part_types: List[Dict[str, Any]],
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
+    category_resolver: Optional[CategoryResolver] = None,
 ) -> Dict[str, Any]:
     """
     Batch create or update part types with first-retry-then-report execution semantics (never rollback).
@@ -120,38 +147,55 @@ def save_part_types_sync(
         category_name_to_id: Shared cache mapping lowercased name to part_type_id.
         part_types: List of part type records with 'name', optional 'description',
                     optional 'parent_part_type_id', and optional 'part_type_id' (for updates).
+        retry_delay: Delay in seconds between retries upon transient network errors.
+        retry_count: Maximum number of retries upon transient network errors.
+        category_resolver: Optional CategoryResolver for hierarchy lookup and ambiguity detection.
     """
-    if not part_types or not isinstance(part_types, list):
-        return {
-            "status": "error",
-            "error": "Validation failed",
-            "details": ["'part_types' must be a non-empty list of records."],
-        }
-
-    # Pre-flight validation
-    validation_errors: List[str] = []
-    for i, item in enumerate(part_types):
-        if not isinstance(item, dict):
-            validation_errors.append(f"Item {i}: not a valid dictionary.")
-            continue
-        name = item.get("name")
-        ptid = item.get("part_type_id")
-        if ptid is None and (not name or not str(name).strip()):
-            validation_errors.append(f"Item {i}: 'name' is required when creating a new part type.")
-
-    if validation_errors:
-        return {
-            "status": "error",
-            "error": "Validation failed",
-            "details": validation_errors,
-        }
-
-    created: List[Dict[str, Any]] = []
-    updated: List[Dict[str, Any]] = []
-    failed: List[Dict[str, Any]] = []
+    normalized_types, err_resp = normalize_batch_input(part_types, "part_types")
+    if err_resp:
+        return err_resp
 
     with proxy._lock:
-        for i, item in enumerate(part_types):
+        if category_resolver is None:
+            category_resolver = CategoryResolver()
+        category_resolver.warm_cache(
+            proxy,
+            category_cache=category_cache,
+            category_name_to_id=category_name_to_id,
+        )
+
+        # Pre-flight validation
+        validation_errors: List[str] = []
+        for i, item in enumerate(normalized_types):
+            if not isinstance(item, dict):
+                validation_errors.append(f"Item {i}: not a valid dictionary.")
+                continue
+            name = item.get("name")
+            ptid = item.get("part_type_id")
+            if ptid is None:
+                if not name or not str(name).strip():
+                    validation_errors.append(f"Item {i}: 'name' is required when creating a new part type.")
+                else:
+                    name_str = str(name).strip()
+                    matches = category_resolver.find_matches(name_str)
+                    if len(matches) > 1:
+                        candidates = ", ".join(f"ID {tid} '{path}'" for tid, path in matches)
+                        validation_errors.append(
+                            f"Item {i} ('{name_str}'): part type name is ambiguous. "
+                            f"Matches {len(matches)} categories: [{candidates}]. Please specify 'part_type_id' to update."
+                        )
+
+        if validation_errors:
+            return {
+                "status": "error",
+                "error": "Validation failed",
+                "details": validation_errors,
+            }
+
+        created: List[Dict[str, Any]] = []
+        updated: List[Dict[str, Any]] = []
+        failed: List[Dict[str, Any]] = []
+        for i, item in enumerate(normalized_types):
             ptid = item.get("part_type_id")
             name = str(item["name"]).strip() if item.get("name") else None
             desc = item.get("description")
@@ -171,16 +215,34 @@ def save_part_types_sync(
                         "retries": 0,
                     })
                     continue
+
+                if target_id not in category_cache:
+                    all_pts = {pt.part_type_id: pt.name for pt in proxy.get_part_types()}
+                    category_cache.update(all_pts)
+                    if target_id not in category_cache:
+                        failed.append({
+                            "item": item,
+                            "error": f"Part type ID {target_id} does not exist in inventory",
+                            "retries": 0,
+                        })
+                        continue
             elif name and name.lower() in category_name_to_id:
                 target_id = category_name_to_id[name.lower()]
                 is_update = True
+            elif not name:
+                failed.append({
+                    "item": item,
+                    "error": f"Item {i}: 'name' is required when creating a new part type.",
+                    "retries": 0,
+                })
+                continue
 
-            # Execution with retry-then-report (1 retry upon transient network failure)
+            # Execution with retry-then-report upon transient network failure
             success = False
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     if is_update and target_id is not None:
                         req = UpdatePartTypeRequest(
@@ -215,12 +277,15 @@ def save_part_types_sync(
                         }))
                         success = True
                         break
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not success:
                 failed.append({
@@ -228,6 +293,13 @@ def save_part_types_sync(
                     "error": last_err or "Unknown failure",
                     "retries": retries,
                 })
+
+        if category_resolver is not None and (created or updated):
+            category_resolver.warm_cache(
+                proxy,
+                category_cache=category_cache,
+                category_name_to_id=category_name_to_id,
+            )
 
     status = "success"
     if failed:
@@ -250,6 +322,9 @@ def delete_part_types_sync(
     category_name_to_id: Dict[str, int],
     part_type_ids: Optional[List[int]] = None,
     names: Optional[List[str]] = None,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
+    category_resolver: Optional[CategoryResolver] = None,
 ) -> Dict[str, Any]:
     """
     Batch delete part types by ID or name with first-retry-then-report semantics (never rollback).
@@ -260,6 +335,9 @@ def delete_part_types_sync(
         category_name_to_id: Shared cache mapping lowercased name to part_type_id.
         part_type_ids: Numeric part type IDs to delete.
         names: Part type names to delete.
+        retry_delay: Delay in seconds between retries upon transient network errors.
+        retry_count: Maximum number of retries upon transient network errors.
+        category_resolver: Optional CategoryResolver for hierarchy lookup and ambiguity detection.
     """
     if not part_type_ids and not names:
         return {
@@ -272,6 +350,14 @@ def delete_part_types_sync(
     seen_ids: Set[int] = set()
 
     with proxy._lock:
+        if category_resolver is None:
+            category_resolver = CategoryResolver()
+        category_resolver.warm_cache(
+            proxy,
+            category_cache=category_cache,
+            category_name_to_id=category_name_to_id,
+        )
+
         if part_type_ids:
             for pid in part_type_ids:
                 try:
@@ -280,7 +366,7 @@ def delete_part_types_sync(
                     continue
                 if pid_int not in seen_ids:
                     seen_ids.add(pid_int)
-                    name = category_cache.get(pid_int)
+                    name = category_cache.get(pid_int) or category_resolver.get_path(pid_int)
                     resolved_targets.append({"part_type_id": pid_int, "name": name})
 
         if names:
@@ -288,14 +374,27 @@ def delete_part_types_sync(
                 n_str = str(n).strip()
                 if not n_str:
                     continue
-                pid_int = category_name_to_id.get(n_str.lower())
-                if pid_int is None:
+                matches = category_resolver.find_matches(n_str)
+                if len(matches) > 1:
+                    candidates = ", ".join(f"ID {tid} '{path}'" for tid, path in matches)
+                    return {
+                        "status": "error",
+                        "error": "Ambiguous part type name",
+                        "details": [
+                            f"Part type name '{n_str}' is ambiguous. Matches {len(matches)} categories: [{candidates}]. "
+                            "Please specify 'part_type_ids' instead."
+                        ],
+                    }
+                elif len(matches) == 1:
+                    pid_int = matches[0][0]
+                    if pid_int not in seen_ids:
+                        seen_ids.add(pid_int)
+                        resolved_targets.append({"part_type_id": pid_int, "name": matches[0][1]})
+                else:
                     found = proxy.get_part_type_by_name(n_str)
-                    if found and found.part_type_id:
-                        pid_int = found.part_type_id
-                if pid_int is not None and pid_int not in seen_ids:
-                    seen_ids.add(pid_int)
-                    resolved_targets.append({"part_type_id": pid_int, "name": n_str})
+                    if found and found.part_type_id and found.part_type_id not in seen_ids:
+                        seen_ids.add(found.part_type_id)
+                        resolved_targets.append({"part_type_id": found.part_type_id, "name": n_str})
 
         if not resolved_targets:
             return {
@@ -313,7 +412,7 @@ def delete_part_types_sync(
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     ok = proxy.delete_part_type(pid)
                     if ok:
@@ -325,16 +424,17 @@ def delete_part_types_sync(
                         break
                     else:
                         last_err = "Backend returned unsuccessful status for deletion"
-                        retries = attempt + 1
-                        if attempt == 0:
-                            time.sleep(0.2)
-                            continue
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                        retries = 0
+                        break
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not success:
                 failed.append({
@@ -342,6 +442,13 @@ def delete_part_types_sync(
                     "error": last_err or "Deletion failed",
                     "retries": retries,
                 })
+
+        if category_resolver is not None and deleted:
+            category_resolver.warm_cache(
+                proxy,
+                category_cache=category_cache,
+                category_name_to_id=category_name_to_id,
+            )
 
     status = "success"
     if failed:

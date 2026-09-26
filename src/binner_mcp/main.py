@@ -58,6 +58,18 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Optional path to write log output in addition to sys.stderr",
     )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=None,
+        help="Delay in seconds between retry attempts for transient network errors (default: 3.0)",
+    )
+    parser.add_argument(
+        "--retry-count",
+        type=int,
+        default=None,
+        help="Maximum retry attempts for transient network errors (default: 1)",
+    )
     return parser.parse_args(args)
 
 
@@ -72,6 +84,8 @@ def main() -> int:
         port_override=args.port,
         category_delimiter_override=args.category_delimiter,
         log_file_override=args.log_file,
+        retry_delay_override=args.retry_delay,
+        retry_count_override=args.retry_count,
     )
     logger = setup_logging(level=config.log_level, log_file=config.log_file)
     logger.info("Starting Binner MCP Server (transport=%s)...", config.transport)

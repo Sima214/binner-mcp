@@ -12,6 +12,10 @@ logger = logging.getLogger("binner_mcp.config")
 CONFIG_FILENAME = "binnermcp_config.json"
 
 
+DEFAULT_RETRY_DELAY = 3.0
+DEFAULT_RETRY_COUNT = 1
+
+
 class BinnerConfig(BaseModel):
     """Configuration settings for Binner MCP Server and API Proxy."""
 
@@ -29,6 +33,14 @@ class BinnerConfig(BaseModel):
     log_file: Optional[str] = Field(
         default=None,
         description="Optional path to write log output in addition to sys.stderr",
+    )
+    retry_delay: float = Field(
+        default=DEFAULT_RETRY_DELAY,
+        description="Delay in seconds between retry attempts for transient network errors",
+    )
+    retry_count: int = Field(
+        default=DEFAULT_RETRY_COUNT,
+        description="Maximum number of retry attempts for transient network errors",
     )
 
 
@@ -84,13 +96,16 @@ def load_config(
     port_override: Optional[int] = None,
     category_delimiter_override: Optional[str] = None,
     log_file_override: Optional[str] = None,
+    retry_delay_override: Optional[float] = None,
+    retry_count_override: Optional[int] = None,
 ) -> BinnerConfig:
     """
     Load configuration with strict precedence:
     1. Built-in defaults
     2. binnermcp_config.json (if found)
     3. Environment variables (BINNER_BASE_URL, BINNER_USERNAME, BINNER_PASSWORD, BINNER_LOG_LEVEL,
-       BINNER_MCP_TRANSPORT, BINNER_MCP_HOST, BINNER_MCP_PORT, BINNER_CATEGORY_DELIMITER, BINNER_LOG_FILE)
+       BINNER_MCP_TRANSPORT, BINNER_MCP_HOST, BINNER_MCP_PORT, BINNER_CATEGORY_DELIMITER, BINNER_LOG_FILE,
+       BINNER_RETRY_DELAY, BINNER_RETRY_COUNT)
     4. Explicit overrides (e.g. CLI arguments)
     """
     config_data: dict[str, Any] = {}
@@ -124,6 +139,16 @@ def load_config(
         config_data["category_delimiter"] = env_delim
     if env_log_file := os.environ.get("BINNER_LOG_FILE"):
         config_data["log_file"] = env_log_file
+    if env_retry_delay := os.environ.get("BINNER_RETRY_DELAY"):
+        try:
+            config_data["retry_delay"] = float(env_retry_delay)
+        except ValueError as ve:
+            raise ValueError(f"Invalid float for BINNER_RETRY_DELAY '{env_retry_delay}': {ve}") from ve
+    if env_retry_count := os.environ.get("BINNER_RETRY_COUNT"):
+        try:
+            config_data["retry_count"] = int(env_retry_count)
+        except ValueError as ve:
+            raise ValueError(f"Invalid integer for BINNER_RETRY_COUNT '{env_retry_count}': {ve}") from ve
     if env_port := os.environ.get("BINNER_MCP_PORT"):
         try:
             config_data["port"] = int(env_port)
@@ -142,6 +167,10 @@ def load_config(
         config_data["category_delimiter"] = category_delimiter_override
     if log_file_override is not None:
         config_data["log_file"] = log_file_override
+    if retry_delay_override is not None:
+        config_data["retry_delay"] = retry_delay_override
+    if retry_count_override is not None:
+        config_data["retry_count"] = retry_count_override
 
     if "log_level" in config_data and isinstance(config_data["log_level"], str):
         config_data["log_level"] = config_data["log_level"].upper()

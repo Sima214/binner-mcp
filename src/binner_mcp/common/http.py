@@ -154,3 +154,23 @@ class BaseHttpClient:
             self._handle_response_status(resp, method, path)
 
             return resp
+
+
+from binner_mcp.config import DEFAULT_RETRY_DELAY
+
+RETRY_DELAY: float = DEFAULT_RETRY_DELAY
+
+
+def is_transient_network_error(exc: Exception) -> bool:
+    """
+    Determine whether an exception represents a transient network issue eligible for retry.
+
+    Only connection timeouts, socket/DNS errors, and transient gateway statuses (502, 503, 504)
+    are retried. Client errors (4xx), validation errors, and business logic exceptions are never retried.
+    """
+    if isinstance(exc, (ProxyConnectionError, requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+    if isinstance(exc, ProxyAPIError) and getattr(exc, "status_code", None) in (502, 503, 504):
+        return True
+    return False
+

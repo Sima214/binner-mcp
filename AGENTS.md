@@ -94,7 +94,8 @@ src/binner_mcp/
 
 ### Rule 8: Category Terminology Restrictions
 * **Forbidden Terms:** Do not use the terms "breadcrumbs" or "taxonomies" in documentation, docstrings, variable names, function names, or tool descriptions.
-* **Hierarchy Representation:** Delimiter-based hierarchies of part types (e.g. `Audio::Buzzer` with configurable delimiters) are fully supported and should be retained as-is. Part type IDs must always be supported and prioritized.
+* **Hierarchy Representation:** Delimiter-based hierarchies of part types (e.g. `Audio::Buzzer` with configurable delimiters) are fully supported and should be retained as-is.
+* **Scope of Part Type IDs:** In `binner_mcp/api`, part type IDs must always be supported and prioritized when interacting with Binner backend endpoints. This rule is explicitly about `binner_mcp/api` behaviour and is not relevant to the MCP tool interface.
 
 ---
 

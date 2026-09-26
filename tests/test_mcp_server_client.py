@@ -609,6 +609,51 @@ async def test_manage_bom_parts_fail_has_no_side_effects(
         mock_proxy.delete_bom_part.assert_not_called()
 
 
+@pytest.mark.anyio
+async def test_manage_bom_parts_update_preserves_part_info(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    proj = ProjectResponse(projectId=1, name="Test Proj")
+    mock_proxy.get_project.return_value = proj
+    mock_proxy.get_bom.return_value = {
+        "projectId": 1,
+        "parts": [
+            {
+                "projectPartAssignmentId": 101,
+                "partId": 42,
+                "partNumber": "TEST-PART",
+                "quantity": 1,
+                "notes": "R1",
+            }
+        ],
+    }
+    mock_proxy.get_part_by_number.return_value = PartResponse(partId=42, partNumber="TEST-PART", quantity=100)
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        result = await client.call_tool(
+            "manage_bom_parts",
+            {
+                "project_id": 1,
+                "parts": [
+                    {"part_number": "TEST-PART", "quantity": 5, "reference_designator": "R1-R5"},
+                ],
+            },
+        )
+        assert not result.is_error
+        data = result.structured_content["result"]
+        assert data["status"] == "success"
+        assert data["updated"] == 1
+
+        mock_proxy.update_bom_part.assert_called_once()
+        req = mock_proxy.update_bom_part.call_args[0][0]
+        assert req.part_id == 42
+        assert req.part_name == "TEST-PART"
+        assert req.quantity == 5
+        assert req.notes == "R1-R5"
+
+
 # --- Swarm Cloud Intelligence Tests ---
 
 @pytest.mark.anyio
@@ -934,5 +979,569 @@ async def test_batch_retry_then_report_never_rollback(mock_proxy: MagicMock, moc
         # Invariant: Failure was reported with details
         assert data["failed"][0]["part_number"] == "FAIL-PERMANENT"
         assert "Temporary socket timeout" in data["failed"][0]["error"]
+
+
+@pytest.mark.anyio
+async def test_save_projects_invalid_project_detected_no_retry(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Verify that an invalid project (non-existent project_id) is detected and not retried."""
+    mock_proxy.get_project.return_value = None  # project doesn't exist
+    mock_proxy.create_project.return_value = ProjectResponse(projectId=101, name="Valid-Project-1")
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        res = await client.call_tool(
+            "save_projects",
+            {
+                "projects": [
+                    {"name": "Valid-Project-1", "description": "Good"},
+                    {"project_id": 99999999, "description": "Non-existent project"},
+                ]
+            },
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "partial_success"
+        assert data["created_count"] == 1
+        assert data["failed_count"] == 1
+
+        failed_item = data["failed"][0]
+        assert "99999999 does not exist" in failed_item["error"]
+        assert failed_item["retries"] == 0
+        mock_proxy.update_project.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_save_projects_non_transient_error_not_retried(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Verify that a non-transient API error (e.g. 400 Bad Request) is not retried."""
+    from binner_mcp.common.exceptions import ProxyAPIError
+
+    mock_proxy.get_project.return_value = None
+
+    def mock_create(req):
+        if req.name == "BAD-REQ":
+            raise ProxyAPIError("Bad Request", status_code=400)
+        return ProjectResponse(projectId=200, name=req.name)
+
+    mock_proxy.create_project.side_effect = mock_create
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        res = await client.call_tool(
+            "save_projects",
+            {
+                "projects": [
+                    {"name": "BAD-REQ", "description": "Triggers 400"},
+                ]
+            },
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert data["failed_count"] == 1
+        assert data["failed"][0]["retries"] == 0
+
+
+@pytest.mark.anyio
+async def test_save_parts_comprehensive_validation_failures(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Test all validation error conditions for save_parts ensuring zero side effects."""
+    mock_proxy.get_part_by_id.return_value = None
+    mock_proxy.get_part_by_number.side_effect = lambda pn: (
+        PartResponse(partId=50, partNumber="EXISTING-PART", quantity=10)
+        if pn.upper() == "EXISTING-PART"
+        else None
+    )
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # Case 1: Empty parts list
+        res = await client.call_tool("save_parts", {"parts": []})
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert "Validation failed" in data["error"]
+
+        # Case 2: Batch with multiple validation failures
+        res = await client.call_tool(
+            "save_parts",
+            {
+                "parts": [
+                    {"part_number": ""},  # blank part number
+                    {"part_number": "P1", "quantity": -5},  # negative quantity
+                    {"part_number": "P2", "low_stock_threshold": -1},  # negative threshold
+                    {"part_number": "P3", "cost": -10.0},  # negative cost
+                    {"part_number": "P4", "part_id": "not_an_int"},  # invalid part_id type
+                    {"part_number": "P5", "part_id": 999999},  # non-existent part_id
+                    {"part_number": "DUP", "quantity": 1},
+                    {"part_number": "dup", "quantity": 2},  # duplicate part_number in batch
+                    {"part_number": "EXISTING-PART", "create_only": True},  # create_only violation
+                ]
+            },
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert len(data["details"]) >= 8
+
+        # Invariant: Zero mutations executed
+        mock_proxy.create_part.assert_not_called()
+        mock_proxy.update_part.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_delete_parts_comprehensive_validation_failures(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Test delete_parts validation failures and ensure zero deletions executed."""
+    mock_proxy.get_part_by_id.return_value = None
+    mock_proxy.get_part_by_number.return_value = None
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # Case 1: Neither part_numbers nor part_ids provided
+        res = await client.call_tool("delete_parts", {})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # Case 2: Non-existent part_id and part_number
+        res = await client.call_tool(
+            "delete_parts",
+            {"part_ids": [999999], "part_numbers": ["NON-EXISTENT-PART"]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert len(data["details"]) == 2
+
+        # Invariant: Zero deletions executed
+        mock_proxy.delete_part.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_manage_bom_parts_comprehensive_validation_failures(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Test all manage_bom_parts validation failures."""
+    # Case 1: Non-existent project
+    mock_proxy.get_project.return_value = None
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        res = await client.call_tool(
+            "manage_bom_parts",
+            {"project_id": 999999, "parts": [{"part_number": "RES-10K", "quantity": 1}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert "Project ID 999999 does not exist" in data["details"][0]
+
+        # Case 2: Project exists, but empty parts list
+        proj = ProjectResponse(projectId=10, name="Maker Drone")
+        mock_proxy.get_project.return_value = proj
+        mock_proxy.get_bom.return_value = {"projectId": 10, "parts": []}
+
+        res = await client.call_tool("manage_bom_parts", {"project_id": 10, "parts": []})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # Case 3: Mixed validation errors in parts batch
+        mock_proxy.get_part_by_number.side_effect = lambda pn: (
+            PartResponse(partId=101, partNumber="IN-STOCK", quantity=5)
+            if pn == "IN-STOCK"
+            else None
+        )
+
+        res = await client.call_tool(
+            "manage_bom_parts",
+            {
+                "project_id": 10,
+                "parts": [
+                    {"quantity": 1},  # missing both part_number and part_id
+                    {"part_number": "NOT-IN-INVENTORY", "quantity": 1},  # component missing
+                    {"part_number": "IN-STOCK", "quantity": 0},  # quantity < 1
+                    {"part_number": "IN-STOCK", "adjust_stock_delta": -10},  # stock shortage
+                    {"part_number": "IN-STOCK", "remove": True},  # removing part not in BOM
+                ],
+            },
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert len(data["details"]) == 5
+
+        # Invariant: Zero mutations executed
+        mock_proxy.add_bom_part.assert_not_called()
+        mock_proxy.update_bom_part.assert_not_called()
+        mock_proxy.delete_bom_part.assert_not_called()
+        mock_proxy.update_quantity.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_consume_project_bom_comprehensive_validation_failures(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Test all consume_project_bom validation failures."""
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # Case 1: build_quantity < 1
+        res = await client.call_tool("consume_project_bom", {"project_id": 1, "build_quantity": 0})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # Case 2: Neither project_id nor name provided
+        res = await client.call_tool("consume_project_bom", {"build_quantity": 1})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # Case 3: Non-existent project
+        mock_proxy.get_project.return_value = None
+        res = await client.call_tool("consume_project_bom", {"project_id": 999999})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # Case 4: Project with empty BOM
+        proj = ProjectResponse(projectId=20, name="Empty Proj")
+        mock_proxy.get_project.return_value = proj
+        mock_proxy.get_bom.return_value = {"projectId": 20, "parts": []}
+
+        res = await client.call_tool("consume_project_bom", {"project_id": 20})
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert "BOM has no assigned components" in data["details"][0]
+
+
+@pytest.mark.anyio
+async def test_save_and_delete_part_types_validation_failures(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Test save_part_types and delete_part_types validation error paths."""
+    mock_proxy.get_part_types.return_value = []
+    mock_proxy.get_part_type_by_name.return_value = None
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # save_part_types: empty list
+        res = await client.call_tool("save_part_types", {"part_types": []})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # save_part_types: missing name for create
+        res = await client.call_tool("save_part_types", {"part_types": [{"description": "No name"}]})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # save_part_types: non-existent part_type_id
+        res = await client.call_tool("save_part_types", {"part_types": [{"part_type_id": 999999}]})
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert data["failed_count"] == 1
+        assert data["failed"][0]["retries"] == 0
+
+        # delete_part_types: missing both IDs and names
+        res = await client.call_tool("delete_part_types", {})
+        assert not res.is_error
+        assert res.structured_content["result"]["status"] == "error"
+
+        # delete_part_types: non-existent target
+        res = await client.call_tool("delete_part_types", {"names": ["NonExistentCategory"]})
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert "None of the specified part types exist" in data["details"][0]
+
+
+@pytest.mark.anyio
+async def test_ambiguous_part_types_rejected_across_tools(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Verify that ambiguous part types and category inputs are strictly rejected across all MCP tools."""
+    category_tree = [
+        PartTypeResponse(partTypeId=1, name="Passives", parentPartTypeId=None),
+        PartTypeResponse(partTypeId=2, name="Resistors", parentPartTypeId=1),
+        PartTypeResponse(partTypeId=3, name="SMD", parentPartTypeId=2),
+        PartTypeResponse(partTypeId=4, name="Capacitors", parentPartTypeId=1),
+        PartTypeResponse(partTypeId=5, name="SMD", parentPartTypeId=4),
+        PartTypeResponse(partTypeId=6, name="Active", parentPartTypeId=None),
+    ]
+    mock_proxy.get_part_types.return_value = category_tree
+    mock_proxy.get_part_by_number.return_value = None
+    mock_proxy.get_part_by_id.return_value = None
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # --- 1. save_parts: Rejection of non-existent part_type_id ---
+        res = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R1", "part_type_id": 999999}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert "Validation failed" in data["error"]
+        assert any("Part type ID 999999 does not exist" in d for d in data["details"])
+        mock_proxy.create_part.assert_not_called()
+
+        # --- 2. save_parts: Rejection of ambiguous leaf name 'SMD' ---
+        res = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R1", "part_type": "SMD"}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert any("Ambiguous part type 'SMD'" in d for d in data["details"])
+        assert any("Matches 2 categories" in d for d in data["details"])
+        mock_proxy.create_part.assert_not_called()
+
+        # --- 3. save_parts: Rejection of ambiguous partial path 'Passives::SMD' ---
+        res = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R1", "part_type": "Passives::SMD"}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert any("Ambiguous part type 'Passives::SMD'" in d for d in data["details"])
+        mock_proxy.create_part.assert_not_called()
+
+        # --- 4. save_parts: Rejection of non-existent numeric part_type ---
+        res = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R1", "part_type": 999999}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert any("Part type ID 999999 does not exist" in d for d in data["details"])
+        mock_proxy.create_part.assert_not_called()
+
+        # --- 5. save_parts: Rejection of blank part_type ---
+        res = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R1", "part_type": "   "}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert any("cannot be blank" in d for d in data["details"])
+        mock_proxy.create_part.assert_not_called()
+
+        # --- 6. save_parts: Rejection of ambiguous parent in new path 'SMD::0805' ---
+        res = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R1", "part_type": "SMD::0805"}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert any("Ambiguous parent category in path 'SMD::0805'" in d for d in data["details"])
+        mock_proxy.create_part.assert_not_called()
+
+        # --- 7. list_parts: Rejection of ambiguous part_type filter ---
+        res = await client.call_tool(
+            "list_parts",
+            {"part_type": "SMD"},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert data["error"] == "Ambiguous part type"
+        assert any("Matches 2 categories" in d for d in data["details"])
+        mock_proxy.list_parts.assert_not_called()
+
+        # --- 8. list_part_types: Rejection of ambiguous root_name ---
+        res = await client.call_tool(
+            "list_part_types",
+            {"root_name": "SMD"},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert data["error"] == "Ambiguous root part type name"
+        assert any("Matches 2 categories" in d for d in data["details"])
+
+        # --- 9. save_part_types: Rejection of ambiguous name update without part_type_id ---
+        res = await client.call_tool(
+            "save_part_types",
+            {"part_types": [{"name": "SMD", "description": "Updated SMD"}]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert any("part type name is ambiguous" in d for d in data["details"])
+        mock_proxy.update_part_type.assert_not_called()
+        mock_proxy.create_part_type.assert_not_called()
+
+        # --- 10. delete_part_types: Rejection of ambiguous name in names ---
+        res = await client.call_tool(
+            "delete_part_types",
+            {"names": ["SMD"]},
+        )
+        assert not res.is_error
+        data = res.structured_content["result"]
+        assert data["status"] == "error"
+        assert data["error"] == "Ambiguous part type name"
+        assert any("Matches 2 categories" in d for d in data["details"])
+        mock_proxy.delete_part_type.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_overloaded_part_type_acceptance(
+    mock_proxy: MagicMock, mock_swarm: MagicMock
+) -> None:
+    """Verify that save_parts accepts integer ID, numeric string ID, leaf name, and full path when unambiguous."""
+    category_tree = [
+        PartTypeResponse(partTypeId=1, name="Passives", parentPartTypeId=None),
+        PartTypeResponse(partTypeId=2, name="Resistors", parentPartTypeId=1),
+        PartTypeResponse(partTypeId=3, name="SMD", parentPartTypeId=2),
+    ]
+    mock_proxy.get_part_types.return_value = category_tree
+    mock_proxy.get_part_by_number.return_value = None
+    mock_proxy.get_part_by_id.return_value = None
+    mock_proxy.create_part.side_effect = lambda req: PartResponse(
+        partId=101,
+        partNumber=req["part_number"],
+        partTypeId=int(req["part_type_id"]) if req.get("part_type_id") else None,
+    )
+
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=True) as client:
+        # 1. Unambiguous integer ID (3)
+        res1 = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R_INT", "part_type": 3}]},
+        )
+        assert not res1.is_error
+        assert res1.structured_content["result"]["status"] == "success"
+        assert res1.structured_content["result"]["created_count"] == 1
+
+        # 2. Unambiguous digit string ID ("3")
+        res2 = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R_STR_ID", "part_type": "3"}]},
+        )
+        assert not res2.is_error
+        assert res2.structured_content["result"]["status"] == "success"
+        assert res2.structured_content["result"]["created_count"] == 1
+
+        # 3. Unambiguous leaf name ("Resistors" -> ID 2)
+        res3 = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R_LEAF", "part_type": "Resistors"}]},
+        )
+        assert not res3.is_error
+        assert res3.structured_content["result"]["status"] == "success"
+        assert res3.structured_content["result"]["created_count"] == 1
+
+        # 4. Unambiguous full path ("Passives::Resistors::SMD" -> ID 3)
+        res4 = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R_PATH", "part_type": "Passives::Resistors::SMD"}]},
+        )
+        assert not res4.is_error
+        assert res4.structured_content["result"]["status"] == "success"
+        assert res4.structured_content["result"]["created_count"] == 1
+
+        # 5. Fallback numeric part_type_id (3) when part_type is omitted
+        res5 = await client.call_tool(
+            "save_parts",
+            {"parts": [{"part_number": "R_FALLBACK_ID", "part_type_id": 3}]},
+        )
+        assert not res5.is_error
+        assert res5.structured_content["result"]["status"] == "success"
+        assert res5.structured_content["result"]["created_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_mcp_sdk_tool_schemas_published(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    """Verify that MCP tools declare rich Pydantic schemas with properties and descriptions to the SDK."""
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    save_parts_tool = server.mcp._tool_manager.get_tool("save_parts")
+    assert save_parts_tool is not None
+    params = save_parts_tool.parameters
+    assert "$defs" in params
+    assert "PartSaveInput" in params["$defs"]
+    part_props = params["$defs"]["PartSaveInput"]["properties"]
+    assert "part_number" in part_props
+    assert "part_type" in part_props
+    assert "quantity" in part_props
+    assert "cost" in part_props
+    assert "description" in part_props["part_type"]
+
+    save_projects_tool = server.mcp._tool_manager.get_tool("save_projects")
+    assert save_projects_tool is not None
+    proj_params = save_projects_tool.parameters
+    assert "ProjectSaveInput" in proj_params["$defs"]
+
+    save_part_types_tool = server.mcp._tool_manager.get_tool("save_part_types")
+    assert save_part_types_tool is not None
+    pt_params = save_part_types_tool.parameters
+    assert "PartTypeSaveInput" in pt_params["$defs"]
+
+    manage_bom_tool = server.mcp._tool_manager.get_tool("manage_bom_parts")
+    assert manage_bom_tool is not None
+    bom_params = manage_bom_tool.parameters
+    assert "BomPartInput" in bom_params["$defs"]
+
+
+@pytest.mark.anyio
+async def test_unknown_fields_and_arguments_rejected(mock_proxy: MagicMock, mock_swarm: MagicMock) -> None:
+    """Verify that unknown fields in input structures and unknown tool arguments are strictly rejected."""
+    server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+
+    async with Client(server.mcp, raise_exceptions=False) as client:
+        # 1. Unknown field in PartSaveInput
+        res = await client.call_tool("save_parts", {"parts": [{"part_number": "R1", "unknown_field": 123}]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "parts.0.unknown_field" in res.content[0].text
+
+        # 2. Unknown top-level argument in save_parts
+        res = await client.call_tool("save_parts", {"parts": [{"part_number": "R1"}], "bogus_arg": "invalid"})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "bogus_arg" in res.content[0].text
+
+        # 3. Unknown field in ProjectSaveInput
+        res = await client.call_tool("save_projects", {"projects": [{"name": "Proj", "invalid_key": True}]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "projects.0.invalid_key" in res.content[0].text
+
+        # 4. Unknown field in PartTypeSaveInput
+        res = await client.call_tool("save_part_types", {"part_types": [{"name": "Type", "bad_attr": "val"}]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "part_types.0.bad_attr" in res.content[0].text
+
+        # 5. Unknown field in BomPartInput
+        res = await client.call_tool("manage_bom_parts", {"project_id": 1, "parts": [{"part_number": "R1", "extra": 1}]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "parts.0.extra" in res.content[0].text
+
+        # 6. Unknown top-level argument in get_parts
+        res = await client.call_tool("get_parts", {"part_numbers": ["R1"], "unknown_param": 10})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "unknown_param" in res.content[0].text
+
+
+
+
+
 
 

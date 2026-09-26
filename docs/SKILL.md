@@ -9,161 +9,201 @@ description: Binner MCP Server interfaces with local Binner instances to manage 
 
 ```mermaid
 flowchart TD
-    A[System Status & Verification] --> B[Part Discovery & Inspection]
-    B --> C[Part Lifecycle & Sourcing]
-    C --> D[Stock Maintenance & Auditing]
-    D --> E[Project Creation & BOM Assembly]
-    E --> F[Production Batch Stock Consumption]
+    A[1. System Status & Verification] --> B[2. Part Discovery & Inspection]
+    B --> C[3. Part Lifecycle & Ingestion]
+    C --> D[4. Stock Maintenance & Auditing]
+    D --> E[5. Project Creation & BOM Assembly]
+    E --> F[6. Production Batch Stock Consumption]
 ```
 
 ### Step 1: Health & Connectivity Verification
-- Call `get_system_status` to verify backend connectivity, retrieve the installed Binner version, and check global inventory metrics (total parts, valuation, low-stock count).
+- Call `get_system_status` to verify backend connectivity, retrieve the installed Binner version, and check inventory totals (parts count, total stock, valuation, low-stock count). Set `check_cloud=True` to test Binner Swarm cloud reachability.
 
 ### Step 2: Part Discovery & Inspection
-- Discover existing parts in local inventory using `list_parts` with query keywords, category path, bin number, location, package type, manufacturer, low-stock filters, or specific projected `fields` (e.g. `fields=['quantity', 'location', 'bin_number']`).
-- Browse category hierarchy using `list_part_types` with lightweight node output (`id`, `name`, and `children`). Use `depth` (e.g. `depth=1` for top-level categories), `root_id`, or `root_name` to scope subtrees with minimal LLM context footprint. Pass `include_descriptions=True` only when verbose definitions are needed.
-- For deep technical evaluation, pass candidate identifiers (`part_ids` or `part_numbers`) to `get_parts` to retrieve complete electrical values, pinouts, KiCad symbols, supplier links, storage bins, category paths, and datasheets. Supports optional `fields` projection for exact parity with `list_parts`.
+- Search inventory using `list_parts` with query keywords, category paths/names, bin numbers, locations, package types, manufacturers, low-stock filters, or specific projected `fields` (e.g. `fields=['quantity', 'location', 'bin_number']`).
+- Browse category hierarchy using `list_part_types` with lightweight node output (`id`, `name`, `children`). Restrict tree scope with `depth` (e.g. `depth=1` for top-level categories), `root_id`, or `root_name` to optimize LLM context footprint.
+- Retrieve full component specifications, electrical parameters, KiCad symbol/footprint bindings, bin locations, and datasheets using `get_parts` with `part_numbers` or `part_ids`.
 
 ### Step 3: Part Lifecycle / Cataloging & Ingestion
-- Persist categories via `save_part_types` (`name`, optional `parent_part_type_id`, `description`).
-- Persist new components into inventory via `save_parts` with part numbers, quantities, package types, bin locations, unit costs, datasheet URLs, and category identifiers (either numeric `part_type_id` or path strings like `Passives::Resistors::SMD`). Missing category nodes in path strings are created automatically.
+- Create categories with `save_part_types` (`name`, optional `parent_part_type_id`, `description`).
+- Persist new components into inventory with `save_parts`. Supports part numbers, quantities, packages, bin locations, unit costs, datasheet URLs, and category assignments (via overloaded `part_type` accepting numeric IDs or hierarchy paths like `Passives::Resistors::SMD`). Missing intermediate hierarchy nodes in new path strings are created automatically.
 
 ### Step 4: Stock Maintenance & Auditing
-- Update quantities, low-stock alert thresholds, or physical storage bin locations via `save_parts`.
-- Decommission obsolete or surplus stock in bulk via `delete_parts`.
-- Remove unused categories via `delete_part_types`.
+- Update absolute quantities, reorder thresholds, or storage bins via `save_parts`.
+- Decommission obsolete or surplus stock in bulk via `delete_parts` (`part_numbers` or `part_ids`).
+- Remove obsolete categories via `delete_part_types` (`part_type_ids` or `names`).
 
 ### Step 5: Project Lifecycle & BOM Assembly
-- Initialize or update projects with `save_projects(projects=[{"name": "...", "description": "..."}])`.
-- Query existing projects via `list_projects` or `get_projects`.
-- Populate board line items using `manage_bom_parts`, linking inventory parts with per-board required quantities and silkscreen reference designators (e.g. `R1, R2, C1`).
-- Optional stock adjustments (`adjust_stock_delta`) can be applied simultaneously when allocating or deallocating parts.
-- Delete obsolete projects via `delete_projects(project_ids=[...])`.
+- Initialize or update maker projects with `save_projects` (`name`, `description`, optional `project_id`, `archived`).
+- Query maker projects via `list_projects` or `get_projects`.
+- Allocate and edit BOM line items using `manage_bom_parts`, linking components with per-board required quantities, reference designators (e.g. `R1, R2, C1`), and optional simultaneous stock adjustments (`adjust_stock_delta`).
+- Delete obsolete projects via `delete_projects` (`project_ids` or `names`).
 
 ### Step 6: Production Build & Stock Deduction
 - Verify project readiness with `get_projects(project_ids=[...], include_bom=True)`.
-- Trigger batch assembly deduction via `consume_project_bom(project_id=..., build_quantity=N)`.
-- If on-hand inventory is insufficient for any component, the operation halts with a shortage matrix. Restock missing items before re-executing.
+- Execute batch assembly stock deduction via `consume_project_bom(project_id=..., build_quantity=N)`.
+- Enforces an automated shortage circuit breaker: if on-hand stock is insufficient for any BOM item, zero mutations occur and a detailed shortage report is returned.
 
 ---
 
-## 2. Domain Entity Field Specifications & Constraints
+## 2. MCP Tool Directory
 
-### 2.1 Part (Inventory Component)
+| Tool | Primary Parameters | Description |
+| :--- | :--- | :--- |
+| `get_system_status` | `check_cloud: bool = False` | Probe Binner connectivity, version, identity, and inventory statistics. |
+| `list_parts` | `query`, `part_type`, `bin_number`, `location`, `package_type`, `manufacturer`, `low_stock_only`, `fields`, `page`, `limit`, `sort_by`, `direction` | Paginated component search with metadata filtering and field projection. |
+| `get_parts` | `part_numbers: str[]`, `part_ids: int[]`, `fields: str[]` | Batch component inspection returning details, bin locations, and datasheets. |
+| `save_parts` | `parts: PartSaveInput[]` | Batch create or update components with strict pre-flight validation. |
+| `delete_parts` | `part_numbers: str[]`, `part_ids: int[]` | Batch component deletion by part number or ID. |
+| `list_projects` | `query`, `page`, `limit`, `sort_by`, `direction` | Paginated search of maker projects. |
+| `get_projects` | `project_ids: int[]`, `names: str[]`, `include_bom: bool = False` | Batch maker project retrieval with optional normalized BOM breakdown. |
+| `save_projects` | `projects: ProjectSaveInput[]` | Batch create or update maker projects. |
+| `delete_projects` | `project_ids: int[]`, `names: str[]` | Batch project deletion by ID or name. |
+| `consume_project_bom` | `project_id: int`, `name: str`, `build_quantity: int = 1` | Deduct component stock for board unit assembly with shortage circuit breaker. |
+| `list_part_types` | `depth`, `root_id`, `root_name`, `include_descriptions`, `include_part_counts` | Hierarchical category tree optimized for minimal LLM context usage. |
+| `save_part_types` | `part_types: PartTypeSaveInput[]` | Batch create or update category nodes. |
+| `delete_part_types` | `part_type_ids: int[]`, `names: str[]` | Batch category deletion by ID or name. |
+| `manage_bom_parts` | `project_id: int`, `parts: BomPartInput[]` | Batch allocate, modify, or remove BOM line items for a project. |
+| `lookup_cloud_parts` | `part_numbers: str[]` | Query Binner Swarm cloud for pinouts, package footprints, and datasheets. |
 
-| Field Name | Type | Constraints & Defaults | Description |
+---
+
+## 3. Structured Batch Input Schemas
+
+All input models enforce **`extra="forbid"`** (`additionalProperties: false`). Any unknown fields or unexpected arguments are strictly rejected with descriptive validation errors.
+
+### 3.1 `PartSaveInput` (`save_parts`)
+
+Component record for batch inventory creation and updates.
+
+| Field Name | Type | Default | Constraints & Description |
 | :--- | :--- | :--- | :--- |
-| `part_number` / `partNumber` | `string` | **Required**, max 64 chars, unique | Primary component identifier / MPN. |
-| `part_id` / `partId` | `int` | Auto-generated identity | Database primary key. Explicitly passed to target existing parts for updates. |
-| `quantity` | `int` | $\ge 0$, default: `0` | Absolute count of physical units in stock. |
-| `low_stock_threshold` / `lowStockThreshold` | `int` | $\ge 0$, default: `0` | Reorder alert threshold. Triggers low-stock status when `quantity <= low_stock_threshold`. |
-| `cost` | `float` | $\ge 0.0$, `decimal(18,4)`, default: `0.0` | Unit purchase cost. |
-| `currency` | `string` | Optional, e.g. `"USD"`, `"EUR"` | Currency code for unit cost. |
-| `bin_number` / `binNumber` | `string` | Optional, text label | Primary storage bin / drawer identifier (e.g. `"A1-04"`, `"Drawer 12"`). |
-| `bin_number2` / `binNumber2` | `string` | Optional, text label | Secondary storage bin or sub-compartment label. |
-| `location` | `string` | Optional, text label | Physical room, shelf, rack, or cabinet name. |
-| `package_type` / `packageType` | `string` | Optional (e.g. `"SOIC-8"`, `"0805"`, `"TO-220"`) | Component physical footprint / package. |
-| `part_type` / `partType` | `string` | Optional, category name or path | Category path (e.g. `"Passives::Resistors::SMD"`). Auto-creates missing hierarchy nodes. |
-| `part_type_id` / `partTypeId` | `int` | Optional, foreign key | Reference to category primary key (`PartType.part_type_id`). |
-| `description` | `string` | Optional | Free-form technical description. |
-| `value` | `string` | Optional (e.g. `"10k"`, `"0.1uF"`, `"3.3V"`) | Component electrical value for KiCad/EDA integration. |
-| `manufacturer` | `string` | Optional | Component manufacturer name. |
-| `manufacturer_part_number` / `manufacturerPartNumber` | `string` | Optional | Manufacturer's internal part number if different from `part_number`. |
-| `datasheet_url` / `datasheetUrl` | `string` | Optional, valid URL | Direct HTTP/HTTPS link to PDF datasheet. |
-| `product_url` / `productUrl` | `string` | Optional, valid URL | Distributor or manufacturer product web page. |
-| `lowest_cost_supplier` / `lowestCostSupplier` | `string` | Optional | Name of lowest cost vendor/distributor. |
-| `lowest_cost_supplier_url` / `lowestCostSupplierUrl` | `string` | Optional, valid URL | Product URL at lowest cost vendor. |
-| `digi_key_part_number` / `digiKeyPartNumber` | `string` | Optional | Digi-Key SKU / catalog number. |
-| `mouser_part_number` / `mouserPartNumber` | `string` | Optional | Mouser SKU / catalog number. |
-| `arrow_part_number` / `arrowPartNumber` | `string` | Optional | Arrow SKU / catalog number. |
-| `tme_part_number` / `tmePartNumber` | `string` | Optional | TME SKU / catalog number. |
-| `element14_part_number` / `element14PartNumber` | `string` | Optional | Element14 / Farnell SKU / catalog number. |
-| `supplier_part_number` / `supplierPartNumber` | `string` | Optional | Generic supplier catalog number. |
-| `keywords` | `string` \| `string[]` | Optional | Comma-delimited text or list of search keywords. |
-| `symbol_name` / `symbolName` | `string` | Optional | KiCad / EDA schematic symbol name. |
-| `footprint_name` / `footprintName` | `string` | Optional | KiCad / EDA PCB footprint name. |
-| `mounting_type_id` / `mountingTypeId` | `int` | Enum: `0` (Unknown), `1` (SMD), `2` (THT) | Mounting technology classification. |
-| `barcode` | `string` | Optional | Custom barcode or QR code payload. |
-| `short_id` / `shortId` | `string` | System-assigned 10-char string | Read-only compact unique identifier. |
-| `date_created_utc` / `dateCreatedUtc` | `string` | ISO 8601 UTC timestamp | Read-only creation timestamp. |
-| `date_updated_utc` / `dateUpdatedUtc` | `string` | ISO 8601 UTC timestamp | Read-only last modified timestamp. |
+| `part_number` | `string` | **Required** | Unique component identifier / Manufacturer Part Number (MPN). Non-empty. |
+| `part_type` | `string` \| `int` | `None` | Overloaded category identifier: hierarchy path (e.g. `"Passives::Resistors::SMD"`), leaf name (e.g. `"SMD"`), or numeric ID (`10` or `"10"`). |
+| `part_type_id` | `int` \| `string` | `None` | Optional numeric category ID (accepted as fallback if `part_type` is omitted). |
+| `quantity` | `int` \| `string` | `0` | Absolute count of physical units in stock ($\ge 0$). |
+| `low_stock_threshold` | `int` \| `string` | `0` | Reorder alert threshold ($\ge 0$). |
+| `cost` | `float` \| `string` | `0.0` | Unit purchase cost ($\ge 0.0$). |
+| `currency` | `string` | `"USD"` | Currency code (e.g. `"USD"`, `"EUR"`). |
+| `bin_number` | `string` | `None` | Primary storage bin / drawer identifier (e.g. `"A1-04"`, `"Drawer 12"`). |
+| `bin_number2` | `string` | `None` | Secondary storage bin or sub-compartment label. |
+| `location` | `string` | `None` | Physical storage location (room, cabinet, rack, or shelf name). |
+| `package_type` | `string` | `None` | Component footprint / package (e.g. `"0805"`, `"SOIC-8"`). |
+| `manufacturer` | `string` | `None` | Component manufacturer name. |
+| `manufacturer_part_number` | `string` | `None` | Manufacturer internal part number if different from `part_number`. |
+| `description` | `string` | `None` | Free-form technical description. |
+| `datasheet_url` | `string` | `None` | Direct HTTP/HTTPS URL to component datasheet PDF. |
+| `product_url` | `string` | `None` | Direct URL to distributor or supplier product web page. |
+| `part_id` | `int` \| `string` | `None` | Database primary key of existing part. Explicitly passed for updates. |
+| `create_only` | `bool` | `False` | If `True`, halts mutation with an error if the part already exists in inventory. |
 
----
+### 3.2 `ProjectSaveInput` (`save_projects`)
 
-### 2.2 Part Type (Category)
+Maker project record for batch persistence.
 
-| Field Name | Type | Constraints & Defaults | Description |
+| Field Name | Type | Default | Constraints & Description |
 | :--- | :--- | :--- | :--- |
-| `part_type_id` / `partTypeId` | `int` | Auto-generated identity | Primary key of the category node. |
-| `name` | `string` | **Required**, non-empty | Category name (e.g. `"Resistors"`). Unique within the same parent node. |
-| `parent_part_type_id` / `parentPartTypeId` | `int` | Optional, nullable | Foreign key referencing parent category. `null` or `0` designates a root category. |
-| `parent_part_type` / `parentPartType` | `string` | Read-only | Name of the parent category. |
-| `description` | `string` | Optional | Classification scope or description. |
-| `reference_designator` / `referenceDesignator` | `string` | Optional (e.g. `"R"`, `"C"`, `"U"`) | Default schematic reference designator prefix for parts of this type. |
-| `symbol_id` / `symbolId` | `string` | Optional | Default EDA schematic symbol identifier. |
-| `icon` | `string` | Optional | SVG markup or icon identifier. |
-| `parts` | `int` | Read-only, default: `0` | Count of inventory parts assigned to this category. |
+| `name` | `string` | `None` | Project title. Required when creating a new project. |
+| `project_id` | `int` | `None` | Numeric project ID. Required when updating an existing project without `name`. |
+| `description` | `string` | `None` | Maker project description or documentation notes. |
+| `archived` | `bool` | `False` | Soft-archive status of the project. |
 
----
+### 3.3 `PartTypeSaveInput` (`save_part_types`)
 
-### 2.3 Project (Maker Project)
+Category hierarchy record for batch persistence.
 
-| Field Name | Type | Constraints & Defaults | Description |
+| Field Name | Type | Default | Constraints & Description |
 | :--- | :--- | :--- | :--- |
-| `project_id` / `projectId` | `int` | Auto-generated identity | Primary key of the project. |
-| `name` | `string` | **Required**, non-empty, unique | Project title (e.g. `"USB-C PD Trigger Board"`). |
-| `description` | `string` | Optional | Project overview, revision goals, or build specifications. |
-| `archived` | `bool` | Default: `false` | Soft-archive flag. |
-| `location` | `string` | Optional | Physical lab bench, bin, or build area. |
-| `color` | `int` | Default: `0` | Color code tag for UI display. |
-| `notes` | `string` | Optional | Free-form fabrication or assembly notes. |
-| `part_count` / `partCount` | `int` | Read-only, default: `0` | Number of distinct component line items in the project BOM. |
-| `pcb_count` / `pcbCount` | `int` | Read-only, default: `0` | Number of associated PCB designs. |
-| `date_created_utc` / `dateCreatedUtc` | `string` | ISO 8601 UTC timestamp | Read-only creation timestamp. |
+| `name` | `string` | `None` | Category name (e.g. `"Resistors"`). Required when creating a new category. |
+| `part_type_id` | `int` | `None` | Numeric category ID. Required when updating an existing category with an ambiguous name. |
+| `parent_part_type_id` | `int` | `None` | Parent category ID for hierarchical nesting (`null` or `0` for root categories). |
+| `description` | `string` | `None` | Classification scope or description for this category node. |
+
+### 3.4 `BomPartInput` (`manage_bom_parts`)
+
+Bill of Materials line item operation record.
+
+| Field Name | Type | Default | Constraints & Description |
+| :--- | :--- | :--- | :--- |
+| `part_number` | `string` | `None` | Inventory component part number. (Either `part_number` or `part_id` required). |
+| `part_id` | `int` | `None` | Inventory component numeric ID. |
+| `quantity` | `int` | `1` | Required units per board ($\ge 1$). |
+| `reference_designator` | `string` | `None` | Silkscreen schematic designators (e.g. `"R1, R2, C5"`). |
+| `notes` | `string` | `None` | Assembly notes or custom instructions for this line item. |
+| `adjust_stock_delta` | `int` | `None` | Additive inventory stock adjustment applied simultaneously (`stock += delta`). |
+| `remove` | `bool` | `False` | If `True`, removes this line item assignment from the project BOM. |
 
 ---
 
-### 2.4 BOM Part (Project Part Assignment)
-When inspecting project BOMs via `get_projects(include_bom=True)`, line items are delivered in a normalized, lean structure pruned of duplicate nested part objects:
+## 4. Domain Entity Models & Response Shapes
+
+### 4.1 Component Entity (`PartResponse`)
+
+| Field Name | Type | Description |
+| :--- | :--- | :--- |
+| `part_id` | `int` | Database primary key. |
+| `part_number` | `string` | Unique component part number / MPN. |
+| `quantity` | `int` | Absolute units on hand in inventory. |
+| `low_stock_threshold` | `int` | Reorder threshold triggering low-stock alert when `quantity <= threshold`. |
+| `cost` | `float` | Unit cost. |
+| `currency` | `string` | Currency code (`"USD"`). |
+| `bin_number` | `string` | Primary bin / drawer label. |
+| `bin_number2` | `string` | Secondary compartment label. |
+| `location` | `string` | Room, shelf, or cabinet name. |
+| `package_type` | `string` | Footprint / package. |
+| `part_type` | `string` | Resolved category hierarchy path. |
+| `manufacturer` | `string` | Manufacturer name. |
+| `manufacturer_part_number` | `string` | Manufacturer internal SKU. |
+| `description` | `string` | Component description. |
+| `datasheet_url` | `string` | Datasheet PDF link. |
+| `product_url` | `string` | Supplier product page link. |
+| `value` | `string` | Electrical component value (e.g. `"10k"`, `"0.1uF"`). |
+| `symbol_name` | `string` | KiCad schematic symbol name. |
+| `footprint_name` | `string` | KiCad PCB footprint name. |
+| `mounting_type_id` | `int` | `0` (Unknown), `1` (SMD), `2` (THT). |
+| `short_id` | `string` | Compact 10-character read-only identifier. |
+
+### 4.2 Normalized BOM Line Item (`BomPartResponse`)
+
+Delivered by `get_projects(include_bom=True)`:
 
 | Field Name | Type | Description |
 | :--- | :--- | :--- |
 | `assignment_id` | `int` | Primary key of the project part assignment. |
-| `part_id` | `int` | Internal database part ID. |
-| `part_number` | `string` | Unique component part number / MPN. |
-| `quantity` | `int` | Count required per board unit. |
-| `reference_designator` | `string` | Silkscreen reference designators (e.g. `"D1, D2"`, `"R1"`). |
+| `part_id` | `int` | Inventory database part ID. |
+| `part_number` | `string` | Component MPN / part number. |
+| `quantity` | `int` | Required units per board assembly. |
+| `reference_designator` | `string` | Schematic reference designators (e.g. `"R1, R2"`). |
 | `stock_on_hand` | `int` | Physical count currently available in inventory. |
-| `package_type` | `string` | Component package / footprint (e.g. `"0805"`). |
+| `package_type` | `string` | Physical footprint / package. |
 
 ---
 
-## 3. Operational Constraints & Semantics
+## 5. Operational Constraints & Validation Semantics
 
-1. **Quantity Update Semantics:**
-   - In `save_parts`: `quantity` sets the **absolute** on-hand count in inventory.
-   - In `manage_bom_parts`: `adjust_stock_delta` applies an **additive delta** to inventory (`stock += adjust_stock_delta`).
-   - In `consume_project_bom`: Inventory is decremented by `quantity_per_board * build_quantity`.
+1. **Strict Unknown Argument & Field Rejection (`extra="forbid"`):**
+   - Both top-level tool arguments and nested batch input records reject any unrecognized parameters with descriptive validation errors.
+   - Prevents silent typos (e.g. sending `"qty"` instead of `"quantity"`) from causing unintended defaults or data loss.
 
-2. **BOM Shortage Circuit Breaker:**
-   - `consume_project_bom` pre-flights stock across all BOM items before executing deductions.
-   - If `on_hand < (bom_quantity * build_quantity)` for any line item, execution aborts immediately, returns a detailed shortage list, and modifies **zero** inventory records.
+2. **Pre-Flight Zero-Side-Effects Validation Policy:**
+   - In `save_parts`, full batch validation runs before any mutation executes.
+   - If ANY item contains invalid data (duplicate part numbers, negative quantities, invalid types, missing required names, or ambiguous category paths), execution halts immediately and **zero** database records are created or updated.
 
-3. **Batch Mutation Execution Semantics:**
-   - All batch mutation tools (`save_parts`, `delete_parts`, `save_projects`, `delete_projects`, `save_part_types`, `delete_part_types`, `manage_bom_parts`) follow first retry, then report, never rollback.
-   - Transient network failures are retried once immediately. Permanent failures are reported with specific errors in `failed`, while already committed items remain persistent.
+3. **Stock Quantity Semantics:**
+   - `save_parts`: `quantity` sets the **absolute** on-hand inventory count.
+   - `manage_bom_parts`: `adjust_stock_delta` applies an **additive delta** (`stock += delta`).
+   - `consume_project_bom`: Decrements stock by `quantity_per_board * build_quantity`.
 
-4. **Category Tree Representation & LLM Context Efficiency:**
-   - Category strings in `save_parts` can be supplied as leaf names (`"SMD"`) or delimited paths (`"Passives::Resistors::SMD"`).
-   - If intermediate or leaf categories do not exist, Binner creates them in order.
-   - `list_part_types` outputs a lightweight tree (`id`, `name`, and non-empty `children`).
-   - Restrict scope using `depth` (e.g. `depth=1`), `root_id`, or `root_name` to prevent context bloating.
+4. **BOM Shortage Circuit Breaker:**
+   - `consume_project_bom` checks on-hand stock across all BOM items before executing deductions.
+   - If stock is insufficient for any item, execution aborts, returns a shortage breakdown matrix, and leaves inventory untouched.
 
-5. **Identifier Resolution & Field Projections:**
-   - Parts can be addressed by `part_number` (case-insensitive string) or `part_id` (integer).
-   - Both `list_parts` and `get_parts` support `fields` projection (e.g. `fields=['quantity', 'bin_number']`) to return only necessary properties.
-   - Projects can be addressed by `name` or `project_id`.
+5. **Category Hierarchy Resolution & Ambiguity Safety:**
+   - `part_type` accepts leaf names (`"SMD"`) or delimited paths (`"Passives::Resistors::SMD"`).
+   - If a leaf name matches multiple categories, the mutation is rejected with candidate suggestions until disambiguated with a full path or numeric `part_type_id`.
+   - Missing parent nodes in valid path strings are created automatically.
 
-6. **File Logging:**
-   - Optional file logging can be configured via `--log-file <path>`, `BINNER_LOG_FILE` environment variable, or `log_file` in `binnermcp_config.json`.
-   - Stdio transport on `sys.stdout` remains strictly protected for JSON-RPC message framing.
+6. **Batch Mutation Fault Tolerance (Retry-Then-Report, Never Rollback):**
+   - Transient network errors (502-504, connection timeouts) are retried once after a 3-second delay.
+   - Non-transient errors (bad payloads, missing entities) fail immediately with 0 retries.
+   - Partial successes are reported with failed items in `failed`, while successful items remain persistent.

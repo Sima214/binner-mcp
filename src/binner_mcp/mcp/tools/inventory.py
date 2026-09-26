@@ -7,7 +7,16 @@ import requests
 
 from binner_mcp.api.client import BinnerAPIProxy
 from binner_mcp.api.exceptions import BinnerError
+from binner_mcp.common.exceptions import BaseProxyError
+from binner_mcp.common.http import RETRY_DELAY, is_transient_network_error
+from binner_mcp.config import DEFAULT_RETRY_DELAY, DEFAULT_RETRY_COUNT
+from binner_mcp.mcp.categories import CategoryResolver, DELIMITER_PATTERN
 from binner_mcp.mcp.normalization import compact_payload, generate_change_diff
+from binner_mcp.mcp.validation import (
+    normalize_batch_input,
+    resolve_part_category_input,
+    validation_error_response,
+)
 
 logger = logging.getLogger("binner_mcp.mcp.tools.inventory")
 
@@ -26,6 +35,7 @@ def list_parts_sync(
     limit: int = 20,
     sort_by: str = "DateCreatedUtc",
     direction: str = "Descending",
+    category_resolver: Optional[CategoryResolver] = None,
 ) -> Dict[str, Any]:
     """
     Search and filter parts inventory with selective field expansion.
@@ -36,6 +46,26 @@ def list_parts_sync(
     limit = min(max(1, limit), 500)
     field_set = set(fields) if fields else set()
 
+    target_part_type_id: Optional[int] = None
+    target_part_type_str: Optional[str] = part_type
+    if part_type is not None and category_resolver is not None:
+        if not category_resolver.path_by_id:
+            category_resolver.warm_cache(proxy)
+        matches = category_resolver.find_matches(part_type)
+        if len(matches) > 1:
+            candidates = ", ".join(f"ID {tid} '{path}'" for tid, path in matches)
+            return {
+                "status": "error",
+                "error": "Ambiguous part type",
+                "details": [
+                    f"Ambiguous part type '{part_type}'. Matches {len(matches)} categories: [{candidates}]. "
+                    "Please specify the full category path or numeric ID."
+                ],
+            }
+        elif len(matches) == 1:
+            target_part_type_id = matches[0][0]
+            target_part_type_str = None
+
     with proxy._lock:
         if low_stock_only:
             paginated = proxy.get_low_stock(
@@ -44,7 +74,8 @@ def list_parts_sync(
                 order_by=sort_by,
                 direction=direction,
                 keyword=query,
-                part_type=part_type,
+                part_type=target_part_type_str,
+                part_type_id=target_part_type_id,
                 bin_number=bin_number,
                 location=location,
                 manufacturer=manufacturer,
@@ -57,7 +88,8 @@ def list_parts_sync(
                 order_by=sort_by,
                 direction=direction,
                 keyword=query,
-                part_type=part_type,
+                part_type=target_part_type_str,
+                part_type_id=target_part_type_id,
                 bin_number=bin_number,
                 location=location,
                 manufacturer=manufacturer,
@@ -221,26 +253,32 @@ def save_parts_sync(
     category_name_to_id: Dict[str, int],
     parts: List[Dict[str, Any]],
     category_delimiter: str = "::",
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
+    category_resolver: Optional[CategoryResolver] = None,
 ) -> Dict[str, Any]:
     """
     Batched component persistence (upsert) for 1 to N components with Zero-Side-Effects failure policy.
 
     Enforces pre-flight validation up front. If ANY item fails validation, ZERO mutations occur.
+    'part_type' accepts a numeric ID (e.g. 10 or '10') or a category path/name string.
     """
-    if not parts or not isinstance(parts, list):
-        return {
-            "status": "error",
-            "error": "Validation failed",
-            "details": ["'parts' must be a non-empty list of part records."],
-        }
+    normalized_parts, err_resp = normalize_batch_input(parts, "parts")
+    if err_resp:
+        return err_resp
 
     errors: List[str] = []
     seen_pns: Set[str] = set()
     preflight_existing: Dict[Any, Any] = {}
+    preflight_category_resolved: Dict[int, Tuple[Optional[int], Optional[str]]] = {}
 
     with proxy._lock:
+        if category_resolver is None:
+            category_resolver = CategoryResolver(delimiter=category_delimiter)
+        category_resolver.warm_cache(proxy, category_cache)
+
         # --- Pre-Flight Validation Phase ---
-        for i, item in enumerate(parts):
+        for i, item in enumerate(normalized_parts):
             if not isinstance(item, dict):
                 errors.append(f"Item {i} is not a valid dictionary.")
                 continue
@@ -255,6 +293,18 @@ def save_parts_sync(
             if pn_lower in seen_pns:
                 errors.append(f"Item {i}: duplicate part_number '{pn}' in batch.")
             seen_pns.add(pn_lower)
+
+            # Resolve category using overloaded part_type (or fallback part_type_id)
+            raw_pt = item.get("part_type")
+            raw_ptid = item.get("part_type_id")
+            if raw_pt is not None or raw_ptid is not None:
+                resolved_id, resolved_path, pt_err = resolve_part_category_input(
+                    raw_pt, raw_ptid, category_resolver
+                )
+                if pt_err:
+                    errors.append(f"Item {i} ('{pn}'): {pt_err}")
+                else:
+                    preflight_category_resolved[i] = (resolved_id, resolved_path)
 
             # Check numeric constraints
             qty = item.get("quantity")
@@ -304,7 +354,7 @@ def save_parts_sync(
         failed_list: List[Dict[str, Any]] = []
         warnings: List[str] = []
 
-        for item in parts:
+        for i, item in enumerate(normalized_parts):
             pn = str(item["part_number"]).strip()
             pn_lower = pn.lower()
             pid = item.get("part_id")
@@ -313,51 +363,50 @@ def save_parts_sync(
             if existing is None:
                 existing = proxy.get_part_by_number(pn)
 
-            # Resolve category ID: support direct part_type_id first
+            # Resolve category ID from pre-flight resolution
             part_type_id: Optional[str] = None
-            raw_ptid = item.get("part_type_id")
-            if raw_ptid is not None:
-                ptid_str = str(raw_ptid).strip()
-                if ptid_str.isdigit():
-                    part_type_id = ptid_str
-
-            part_type_str = item.get("part_type")
-            if part_type_id is None and part_type_str is not None:
-                pts = str(part_type_str).strip()
-                if pts.isdigit():
-                    part_type_id = pts
-                elif pts.lower() in category_name_to_id:
-                    part_type_id = str(category_name_to_id[pts.lower()])
-                else:
-                    import re
-                    delims = {category_delimiter, "::", "#", ">"}
-                    pattern = "|".join(re.escape(d) for d in delims if d)
-                    last_seg = re.split(pattern, pts)[-1].strip().lower()
-                    if last_seg in category_name_to_id:
-                        part_type_id = str(category_name_to_id[last_seg])
-                    else:
-                        try:
-                            new_cat = proxy.create_part_type({"name": pts})
-                            part_type_id = str(new_cat.part_type_id)
-                            category_cache[new_cat.part_type_id] = new_cat.name
-                            category_name_to_id[new_cat.name.lower()] = new_cat.part_type_id
-                            warnings.append(f"Created category '{pts}' for part {pn}.")
-                        except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
-                            warnings.append(f"Could not create category '{pts}' for part {pn}: {exc}")
+            if i in preflight_category_resolved:
+                resolved_id, resolved_path = preflight_category_resolved[i]
+                if resolved_id is not None:
+                    part_type_id = str(resolved_id)
+                elif resolved_path is not None:
+                    segments = [s.strip() for s in DELIMITER_PATTERN.split(resolved_path) if s.strip()]
+                    curr_parent_id: Optional[int] = None
+                    for seg_idx, seg in enumerate(segments):
+                        subpath = category_delimiter.join(segments[: seg_idx + 1])
+                        sub_matches = category_resolver.find_matches(subpath)
+                        if sub_matches:
+                            curr_parent_id = sub_matches[0][0]
+                        else:
+                            try:
+                                from binner_mcp.api.models import CreatePartTypeRequest
+                                create_req = CreatePartTypeRequest(
+                                    name=seg,
+                                    parentPartTypeId=curr_parent_id,
+                                )
+                                new_cat = proxy.create_part_type(create_req)
+                                curr_parent_id = new_cat.part_type_id
+                                warnings.append(f"Created category '{seg}' for part '{pn}'.")
+                            except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
+                                warnings.append(f"Could not create category '{seg}' for part '{pn}': {exc}")
+                                break
+                    if curr_parent_id is not None:
+                        part_type_id = str(curr_parent_id)
+                        category_resolver.warm_cache(proxy, category_cache, category_name_to_id)
 
             success = False
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     if existing is None:
                         # CREATE
                         create_req = {
                             "part_number": pn,
-                            "quantity": item.get("quantity", 0),
-                            "low_stock_threshold": item.get("low_stock_threshold", 0),
-                            "cost": float(item.get("cost", 0.0)),
+                            "quantity": item.get("quantity") if item.get("quantity") is not None else 0,
+                            "low_stock_threshold": item.get("low_stock_threshold") if item.get("low_stock_threshold") is not None else 0,
+                            "cost": float(item["cost"]) if item.get("cost") is not None else 0.0,
                             "currency": item.get("currency") or "USD",
                             "bin_number": item.get("bin_number"),
                             "bin_number2": item.get("bin_number2"),
@@ -370,7 +419,10 @@ def save_parts_sync(
                             "part_type_id": part_type_id,
                         }
                         created_part = proxy.create_part(create_req)
-                        cat_desc = category_cache.get(created_part.part_type_id, pts if part_type_str else None)
+                        cat_desc = category_cache.get(
+                            created_part.part_type_id,
+                            str(item.get("part_type")) if "part_type" in item else None,
+                        )
                         created_list.append({
                             "part_id": created_part.part_id,
                             "part_number": created_part.part_number,
@@ -405,9 +457,9 @@ def save_parts_sync(
                         update_req = {
                             "part_id": existing.part_id,
                             "part_number": pn,
-                            "quantity": item["quantity"] if "quantity" in item else existing.quantity,
-                            "low_stock_threshold": item["low_stock_threshold"] if "low_stock_threshold" in item else existing.low_stock_threshold,
-                            "cost": float(item["cost"]) if "cost" in item else existing.cost,
+                            "quantity": item["quantity"] if item.get("quantity") is not None else existing.quantity,
+                            "low_stock_threshold": item["low_stock_threshold"] if item.get("low_stock_threshold") is not None else existing.low_stock_threshold,
+                            "cost": float(item["cost"]) if item.get("cost") is not None else existing.cost,
                             "currency": item.get("currency") or existing.currency or "USD",
                             "bin_number": item["bin_number"] if "bin_number" in item else existing.bin_number,
                             "bin_number2": item["bin_number2"] if "bin_number2" in item else existing.bin_number2,
@@ -417,7 +469,7 @@ def save_parts_sync(
                             "manufacturer": item["manufacturer"] if "manufacturer" in item else existing.manufacturer,
                             "manufacturer_part_number": item["manufacturer_part_number"] if "manufacturer_part_number" in item else existing.manufacturer_part_number,
                             "datasheet_url": item["datasheet_url"] if "datasheet_url" in item else existing.datasheet_url,
-                            "part_type_id": part_type_id if part_type_id is not None else (str(existing.part_type_id) if existing.part_type_id else None),
+                            "part_type_id": part_type_id if (i in preflight_category_resolved) else (str(existing.part_type_id) if existing.part_type_id else None),
                         }
                         updated_part = proxy.update_part(update_req)
                         new_vals = {
@@ -444,12 +496,15 @@ def save_parts_sync(
                         })
                     success = True
                     break
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not success:
                 failed_list.append({
@@ -478,6 +533,8 @@ def delete_parts_sync(
     proxy: BinnerAPIProxy,
     part_numbers: Optional[List[str]] = None,
     part_ids: Optional[List[int]] = None,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+    retry_count: int = DEFAULT_RETRY_COUNT,
 ) -> Dict[str, Any]:
     """
     Batched component deletion with Zero-Side-Effects pre-flight validation.
@@ -541,18 +598,21 @@ def delete_parts_sync(
             last_err: Optional[str] = None
             retries = 0
 
-            for attempt in range(2):
+            for attempt in range(retry_count + 1):
                 try:
                     proxy.delete_part(item["part_id"])
                     deleted_list.append(item)
                     success = True
                     break
-                except (requests.RequestException, BinnerError, ValueError, KeyError) as exc:
+                except (requests.RequestException, BaseProxyError, ValueError, KeyError) as exc:
                     last_err = str(exc)
-                    retries = attempt + 1
-                    if attempt == 0:
-                        time.sleep(0.2)
+                    if attempt < retry_count and is_transient_network_error(exc):
+                        retries = attempt + 1
+                        time.sleep(retry_delay)
                         continue
+                    else:
+                        retries = attempt
+                        break
 
             if not success:
                 failed_list.append({
