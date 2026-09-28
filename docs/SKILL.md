@@ -29,7 +29,7 @@ flowchart TD
 - Persist new components into inventory with `save_parts`. Supports part numbers, quantities, packages, bin locations, unit costs, datasheet URLs, and category assignments (via overloaded `part_type` accepting numeric IDs or hierarchy paths like `Passives::Resistors::SMD`). Missing intermediate hierarchy nodes in new path strings are created automatically.
 
 ### Step 4: Stock Maintenance & Auditing
-- Update absolute quantities, reorder thresholds, or storage bins via `save_parts`.
+- Update absolute quantities, reorder thresholds, or storage bins via `save_parts`. Always use minimal patch semantics (pass only `part_id` or `part_number` and the modified fields; never echo back unmodified fields).
 - Decommission obsolete or surplus stock in bulk via `delete_parts` (`part_numbers` or `part_ids`).
 - Remove obsolete categories via `delete_part_types` (`part_type_ids` or `names`).
 
@@ -84,7 +84,7 @@ Component record for batch inventory creation and updates.
 | `quantity` | `int` \| `string` | `0` | Absolute count of physical units in stock ($\ge 0$). |
 | `low_stock_threshold` | `int` \| `string` | `0` | Reorder alert threshold ($\ge 0$). |
 | `cost` | `float` \| `string` | `0.0` | Unit purchase cost ($\ge 0.0$). |
-| `currency` | `string` | `"USD"` | Currency code (e.g. `"USD"`, `"EUR"`). |
+| `currency` | `string` | `None` | Currency code (e.g. `"USD"`, `"EUR"`). |
 | `bin_number` | `string` | `None` | Primary storage bin / drawer identifier (e.g. `"A1-04"`, `"Drawer 12"`). |
 | `bin_number2` | `string` | `None` | Secondary storage bin or sub-compartment label. |
 | `location` | `string` | `None` | Physical storage location (room, cabinet, rack, or shelf name). |
@@ -207,3 +207,16 @@ Delivered by `get_projects(include_bom=True)`:
    - Transient network errors (502-504, connection timeouts) are retried once after a 3-second delay.
    - Non-transient errors (bad payloads, missing entities) fail immediately with 0 retries.
    - Partial successes are reported with failed items in `failed`, while successful items remain persistent.
+
+7. **Minimal Patch Semantics for Component Updates (`save_parts`):**
+   - When updating existing components, pass **only** the identifier (`part_id` and/or `part_number`) and the specific field(s) undergoing mutation.
+   - **Never echo back unmodified fields:** Re-transmitting unchanged fields bloats payload tokens, risks unintended default applications (e.g., input models applying `currency: "USD"` defaults to unpriced components), and introduces concurrency hazards (e.g., resubmitting `quantity` when renaming a bin silently overwrites physical stock changes made since the last read).
+   - **No Pre-Fetch Requirement:** Do not execute preparatory `get_parts` or `list_parts` queries simply to gather current values before updating; `save_parts` updates are partial patches.
+
+8. **Tool-Calling Efficiency & Inspection Best Practices:**
+   - **Targeted Field Projections:** In `list_parts`, always supply explicit `fields` (e.g., `fields=['bin_number', 'part_type']`) when auditing specific attributes. Avoid dumping complete component models that yield 100KB+ output text files requiring manual line slicing.
+   - **Hierarchical Category Tree Scoping:** In `list_part_types`, utilize `depth` (e.g., `depth=1` for top-level, `depth=2` for families) and `root_name` / `root_id` with `include_part_counts=True`. Never paginate or slice the full unrolled tree when subtrees can be scoped natively.
+   - **Consolidated Batch Verification:** Avoid serial single-attribute checks after migrations (e.g., calling `list_parts` 10+ times to verify individual categories or bin names). Validate database integrity holistically using:
+     - `get_system_status`: Verifies global unique part counts and stock totals in a single call.
+     - `list_part_types(depth=2, include_part_counts=True)`: Verifies counts across all category families simultaneously.
+   - **Trust Tool Execution Results:** Avoid issuing follow-up `view_file` calls to read MCP step output logs when the tool response already reports `{"status": "success", "failed_count": 0, "updated_count": N}`.

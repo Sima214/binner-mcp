@@ -43,7 +43,7 @@ class PartSaveInput(CommonBaseModel):
         description="Unit purchase cost (>= 0.0).",
     )
     currency: Optional[str] = Field(
-        "USD",
+        None,
         description="Currency code for unit cost (e.g. 'USD', 'EUR').",
     )
     bin_number: Optional[str] = Field(
