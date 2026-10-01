@@ -1,12 +1,21 @@
 # Agent Guidelines: Binner MCP Server (`binner-mcp`)
 
-This document provides guidelines, constraints, and architecture instructions for AI coding assistants working in this repository.
+This document provides operational guidelines, engineering constraints, and maintenance instructions for AI coding assistants working in this repository.
 
 ---
 
-## 1. Project Overview & Architecture
+## 1. Project Status & Maintenance Mode
 
-`binner-mcp` is a Python-based **Model Context Protocol (MCP)** server providing an intelligent proxy to local **Binner** inventory instances (.NET 8 / Kestrel).
+`binner-mcp` is in **Maintenance Mode**. The core feature set (15 MCP tools, 5 dynamic resources, bidirectional identity cache, BOM shortage circuit breaker, and Binner Swarm cloud client) is feature-complete, mature, and tested.
+
+### Maintenance Invariants
+* **Surgical, Minimal Edits:** Prioritize targeted bug fixes and reliability hardening. Avoid speculative rewrites, unnecessary refactoring, or architectural churn.
+* **Interface Stability:** Preserve strict backwards compatibility for all 15 MCP tool schemas and public `binner_mcp.api` methods.
+* **Source of Truth:** The working codebase (`src/binner_mcp/`) and test suite (`tests/`) are the primary source of truth. Technical architecture documentation lives in `docs/` (`docs/architecture.md`, `docs/api_reference.md`).
+* **`reference/` Directory:** Contains read-only upstream Binner C# source code (`Binner.Web`, `Binner-Backend`) used for offline verification of ASP.NET Core controllers and entity models. Treat `reference/` as strictly read-only.
+* **`virtenv/` Directory:** Local virtual environment (ignored by Git).
+
+### Architecture Layout
 
 The codebase adheres to a clean, decoupled dual-layered architecture nested inside `src/`:
 
@@ -15,19 +24,33 @@ src/binner_mcp/
 ├── __init__.py
 ├── main.py                  # CLI entrypoint & stderr logging setup
 ├── config.py                # Single-config loader (binnermcp_config.json + env overrides)
-├── api/                     # Layer 1: MCP-Agnostic REST Proxy Client
+├── common/                  # Common core: BaseHttpClient, logging, base models & exceptions
+├── api/                     # Layer 1A: MCP-Agnostic REST Proxy Client
 │   ├── __init__.py
 │   ├── client.py            # BinnerAPIProxy (requests session, token refresh, CRUD)
+│   ├── parts.py             # Inventory parts CRUD & stock adjustments
+│   ├── projects.py          # Maker projects & BOM allocation
+│   ├── part_types.py        # Category hierarchy management
+│   ├── data.py              # CSV bulk import & ZIP backup
+│   ├── cache.py             # Bidirectional identity cache (ID <-> PartNumber)
+│   ├── system.py            # Ping, version extraction, server logs
+│   ├── exceptions.py        # API-specific exceptions
 │   └── models.py            # Pydantic models for Binner requests & responses
+├── swarmer/                 # Layer 1B: Swarmer Cloud API Client (swarm.binner.io)
+│   ├── __init__.py
+│   ├── client.py            # SwarmClient (datasheets, pinouts, footprints, rate limits)
+│   ├── exceptions.py        # Swarm API exceptions & rate limit handling
+│   └── models.py            # Pydantic models for Swarm responses
 └── mcp/                     # Layer 2: Protocol Binding Layer
     ├── __init__.py
     ├── server.py            # MCP server setup & lifecycle
-    ├── tools/               # Modular MCP tool implementations
-    └── resources.py         # Registered MCP Resources (data streams)
+    ├── schemas.py           # Pydantic tool input schemas (extra="forbid")
+    ├── validation.py        # Pre-flight Zero-Side-Effects batch validators
+    ├── categories.py        # Delimiter-based category tree resolver
+    ├── normalization.py     # Response payload normalizers
+    ├── tools/               # Modular MCP tool implementations (15 tools)
+    └── resources.py         # Registered MCP Resources (5 data streams)
 ```
-
-* **`reference/` Directory:** Contains reference documentation and upstream Binner C# source code (`Binner.Web`, `Binner-Backend`). **Treat `reference/` as read-only**. Do not edit reference files unless explicitly instructed to update the design doc.
-* **`virtenv/` Directory:** Local virtual environment (ignored by Git).
 
 ---
 
@@ -39,12 +62,12 @@ src/binner_mcp/
 * **Logging Level Disciplines**:
   * **`INFO`**: High-level application lifecycle events only (server startup, shutdown, successful backend connection, MCP client ready).
   * **`DEBUG`**: Internal state transitions, configuration file resolution path, and **every time an access token is refreshed**.
-  * **`WARNING`**: Ignored, missing, or unmapped fields and non-critical fallbacks (e.g., defaulting to part type `Other`).
+  * **`WARNING`**: Ignored, missing, or unmapped fields and non-critical fallbacks (e.g., defaulting to category `Other`).
   * **`ERROR`**: Unexpected API responses, HTTP 4xx/5xx errors, unrecoverable connection drops, or failed authentication.
   * **`TRACE` (level 5)**: Verbose execution logging every raw API call, including HTTP method, URL, and payloads.
 
 ### Rule 2: Ground Truth API Verification (No Hallucinations)
-* Binner is an ASP.NET Core application. **Never invent endpoints or parameters**. Always reference [reference/binner-mcp-design-doc.md](reference/binner-mcp-design-doc.md) and [`reference/Binner.Web/Controllers/`](reference/Binner.Web/Controllers/).
+* Binner is an ASP.NET Core application. **Never invent endpoints or parameters**. Verify endpoints and models against [`reference/Binner.Web/Controllers/`](reference/Binner.Web/Controllers/), [`reference/Binner-Backend/`](reference/Binner-Backend/), and the technical documentation in [`docs/`](docs/).
 * **Key verified facts**:
   * **Token Refresh:** Endpoint is `POST /api/authentication/refresh-token` (NOT `/api/authentication/refresh`). The server expects `Request.Cookies["refreshToken"]` and delivers the rotated token in `Set-Cookie`.
   * **JWT Timestamp Granularity:** JWT `iat` (issued at) has 1-second Unix epoch granularity; consecutive refresh/login calls within the same second yield identical signatures.
@@ -115,4 +138,4 @@ src/binner_mcp/
 * Test database connectivity before full operations using `GET /api/ping`.
 * Place automated tests in `tests/` using `pytest` and `pytest-asyncio`.
 * **Test Execution Command:** Always run tests using the virtual environment: `virtenv/bin/python -m pytest tests/ -v`. Do not invoke bare `pytest`.
-
+* **Documentation Changes:** Automated tests are not required for pure documentation edits.
