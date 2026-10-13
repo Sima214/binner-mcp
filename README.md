@@ -111,9 +111,9 @@ binner-mcp
 
 ## Client Integration & Agent Skills
 
-### Agent Skill Integration (`docs/SKILL.md`)
+### Agent Skill Integration (`docs/skill-template/`)
 
-The repository includes a domain skill conforming to the open **Agent Skills** standard in [`docs/SKILL.md`](docs/SKILL.md). While MCP provides the execution layer (tools and resources), the skill equips AI assistants with procedural workflows: the 6-step lifecycle workflow, batch schemas, parameter constraints (`extra="forbid"`), and the automated BOM shortage circuit breaker. It leverages **progressive disclosure** (indexing metadata at startup and loading instructions on demand).
+The repository includes a domain skill conforming to the open **Agent Skills** standard in [`docs/skill-template/SKILL.md`](docs/skill-template/SKILL.md) and [`docs/skill-template/references/bin_content_typology.md`](docs/skill-template/references/bin_content_typology.md). While MCP provides the execution layer (tools and resources), the skill equips AI assistants with task-driven workflows, batch schemas, parameter constraints (`extra="forbid"`), and the automated BOM shortage circuit breaker. It leverages **progressive disclosure** (indexing metadata at startup and loading instructions on demand).
 
 #### 1. Native Skill Clients (Antigravity, Claude Code, Cursor, Copilot)
 
@@ -124,14 +124,14 @@ Enables automatic discovery and progressive disclosure without manual prompt inj
 ```bash
 # Workspace / Project install (shared with team via version control):
 mkdir -p .agents/skills/binner
-cp docs/SKILL.md .agents/skills/binner/SKILL.md
+cp -r docs/skill-template/* .agents/skills/binner/
 
 # Or Global / User install (available across all local workspaces):
 mkdir -p ~/.gemini/config/skills/binner
-cp docs/SKILL.md ~/.gemini/config/skills/binner/SKILL.md
+cp -r docs/skill-template/* ~/.gemini/config/skills/binner/
 ```
 
-*Symlinks are also supported: `ln -s "$(pwd)/docs/SKILL.md" ~/.gemini/config/skills/binner/SKILL.md`.*
+*Symlinks are also supported: `ln -s "$(pwd)/docs/skill-template/SKILL.md" ~/.gemini/config/skills/binner/SKILL.md`.*
 
 **Discovery Paths:**
 * **Google Antigravity / Gemini CLI:**
@@ -145,18 +145,18 @@ cp docs/SKILL.md ~/.gemini/config/skills/binner/SKILL.md
 
 #### 2. Instruction & Rule-Based Clients (Claude Desktop, Cursor Rules, Cline / Roo Code)
 
-For clients without native skill discovery directories, reference `docs/SKILL.md` directly in configuration or rule files:
+For clients without native skill discovery directories, reference `docs/skill-template/SKILL.md` directly in configuration or rule files:
 
 ```markdown
 # Include in your client instructions / rule file:
-Read and adhere to the Binner domain workflows and constraints in docs/SKILL.md
+Read and adhere to the Binner domain workflows and constraints in docs/skill-template/SKILL.md
 when handling electronic parts, category hierarchies, Maker projects, or BOM assembly.
 ```
 
 **Configuration Paths:**
 * **Cursor:** Add reference or include contents in `.cursorrules` or `.cursor/rules/binner.mdc`.
 * **VS Code (Cline / Roo Code):** Include path or content in `.clinerules`.
-* **Claude Desktop:** Attach `docs/SKILL.md` to **Project Knowledge** or add reference in Project Custom Instructions.
+* **Claude Desktop:** Attach `docs/skill-template/SKILL.md` to **Project Knowledge** or add reference in Project Custom Instructions.
 * **GitHub Copilot:** Add reference to `.github/copilot-instructions.md`.
 
 ---
@@ -254,7 +254,7 @@ All tools enforce strict argument checking (`extra="forbid"`) and execute throug
 | `delete_parts` | Inventory | `part_numbers: str[]`, `part_ids: int[]` | Batch component deletion by part number or ID. |
 | `list_part_types` | Categories | `depth`, `root_id`, `root_name`, `include_descriptions`, `include_part_counts` | Hierarchical category tree optimized for minimal LLM context usage. |
 | `save_part_types` | Categories | `part_types: PartTypeSaveInput[]` | Batch create or update category hierarchy nodes. |
-| `delete_part_types` | Categories | `part_type_ids: int[]`, `names: str[]` | Batch category deletion by ID or name. |
+| `delete_part_types` | Categories | `ids: int[]`, `names: str[]` | Batch category deletion by ID or name. |
 | `list_projects` | Projects | `query`, `page`, `limit`, `sort_by`, `direction` | Paginated search of maker projects. |
 | `get_projects` | Projects | `project_ids: int[]`, `names: str[]`, `include_bom: bool = False` | Batch maker project retrieval with optional normalized BOM breakdown. |
 | `save_projects` | Projects | `projects: ProjectSaveInput[]` | Batch create or update maker projects. |

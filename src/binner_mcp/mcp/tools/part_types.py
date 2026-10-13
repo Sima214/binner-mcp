@@ -146,7 +146,7 @@ def save_part_types_sync(
         category_cache: Shared cache mapping part_type_id to name.
         category_name_to_id: Shared cache mapping lowercased name to part_type_id.
         part_types: List of part type records with 'name', optional 'description',
-                    optional 'parent_part_type_id', and optional 'part_type_id' (for updates).
+                    optional 'parent_id', and optional 'id' (for updates).
         retry_delay: Delay in seconds between retries upon transient network errors.
         retry_count: Maximum number of retries upon transient network errors.
         category_resolver: Optional CategoryResolver for hierarchy lookup and ambiguity detection.
@@ -171,7 +171,7 @@ def save_part_types_sync(
                 validation_errors.append(f"Item {i}: not a valid dictionary.")
                 continue
             name = item.get("name")
-            ptid = item.get("part_type_id")
+            ptid = item.get("id")
             if ptid is None:
                 if not name or not str(name).strip():
                     validation_errors.append(f"Item {i}: 'name' is required when creating a new part type.")
@@ -182,7 +182,7 @@ def save_part_types_sync(
                         candidates = ", ".join(f"ID {tid} '{path}'" for tid, path in matches)
                         validation_errors.append(
                             f"Item {i} ('{name_str}'): part type name is ambiguous. "
-                            f"Matches {len(matches)} categories: [{candidates}]. Please specify 'part_type_id' to update."
+                            f"Matches {len(matches)} categories: [{candidates}]. Please specify 'id' to update."
                         )
 
         if validation_errors:
@@ -196,10 +196,10 @@ def save_part_types_sync(
         updated: List[Dict[str, Any]] = []
         failed: List[Dict[str, Any]] = []
         for i, item in enumerate(normalized_types):
-            ptid = item.get("part_type_id")
+            ptid = item.get("id")
             name = str(item["name"]).strip() if item.get("name") else None
             desc = item.get("description")
-            parent_id = item.get("parent_part_type_id")
+            parent_id = item.get("parent_id")
 
             # Check if this is an update or create
             is_update = False
@@ -211,7 +211,7 @@ def save_part_types_sync(
                 except (ValueError, TypeError):
                     failed.append({
                         "item": item,
-                        "error": f"Invalid part_type_id: {ptid}",
+                        "error": f"Invalid id: {ptid}",
                         "retries": 0,
                     })
                     continue
@@ -320,7 +320,7 @@ def delete_part_types_sync(
     proxy: BinnerAPIProxy,
     category_cache: Dict[int, str],
     category_name_to_id: Dict[str, int],
-    part_type_ids: Optional[List[int]] = None,
+    ids: Optional[List[int]] = None,
     names: Optional[List[str]] = None,
     retry_delay: float = DEFAULT_RETRY_DELAY,
     retry_count: int = DEFAULT_RETRY_COUNT,
@@ -333,17 +333,17 @@ def delete_part_types_sync(
         proxy: Authenticated Binner API proxy.
         category_cache: Shared cache mapping part_type_id to name.
         category_name_to_id: Shared cache mapping lowercased name to part_type_id.
-        part_type_ids: Numeric part type IDs to delete.
+        ids: Numeric category IDs to delete.
         names: Part type names to delete.
         retry_delay: Delay in seconds between retries upon transient network errors.
         retry_count: Maximum number of retries upon transient network errors.
         category_resolver: Optional CategoryResolver for hierarchy lookup and ambiguity detection.
     """
-    if not part_type_ids and not names:
+    if not ids and not names:
         return {
             "status": "error",
             "error": "Validation failed",
-            "details": ["At least one of 'part_type_ids' or 'names' must be provided."],
+            "details": ["At least one of 'ids' or 'names' must be provided."],
         }
 
     resolved_targets: List[Dict[str, Any]] = []
@@ -358,8 +358,8 @@ def delete_part_types_sync(
             category_name_to_id=category_name_to_id,
         )
 
-        if part_type_ids:
-            for pid in part_type_ids:
+        if ids:
+            for pid in ids:
                 try:
                     pid_int = int(pid)
                 except (ValueError, TypeError):
@@ -382,7 +382,7 @@ def delete_part_types_sync(
                         "error": "Ambiguous part type name",
                         "details": [
                             f"Part type name '{n_str}' is ambiguous. Matches {len(matches)} categories: [{candidates}]. "
-                            "Please specify 'part_type_ids' instead."
+                            "Please specify 'ids' instead."
                         ],
                     }
                 elif len(matches) == 1:

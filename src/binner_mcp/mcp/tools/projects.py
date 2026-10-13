@@ -175,7 +175,7 @@ def save_projects_sync(
     Args:
         proxy: Authenticated Binner API proxy.
         projects: List of project records with 'name', optional 'description',
-                  optional 'project_id' (for updates), optional 'archived'.
+                  optional 'id' (for updates), optional 'archived'.
         retry_delay: Delay in seconds between retries upon transient network errors.
         retry_count: Maximum number of retries upon transient network errors.
     """
@@ -197,7 +197,7 @@ def save_projects_sync(
                 })
                 continue
 
-            pid = item.get("project_id")
+            pid = item.get("id")
             name = str(item["name"]).strip() if item.get("name") else None
             desc = item.get("description")
             archived = bool(item.get("archived", False))
@@ -211,7 +211,7 @@ def save_projects_sync(
                 except (ValueError, TypeError):
                     failed.append({
                         "item": item,
-                        "error": f"Invalid project_id: {pid}",
+                        "error": f"Invalid id: {pid}",
                         "retries": 0,
                     })
                     continue
@@ -220,7 +220,7 @@ def save_projects_sync(
                 if not existing_proj:
                     failed.append({
                         "item": item,
-                        "error": f"Project with project_id {target_id} does not exist in inventory",
+                        "error": f"Project with id {target_id} does not exist in inventory",
                         "retries": 0,
                     })
                     continue

@@ -297,10 +297,10 @@ class BinnerMCPServer:
             projects: List[ProjectSaveInput],
         ) -> Dict[str, Any]:
             """
-            Batch create or update maker projects. Each item requires 'name' (for create) or 'project_id' (for update).
+            Batch create or update maker projects. Each item requires 'name' (for create) or 'id' (for update).
 
             Args:
-                projects: Project records with 'name', optional 'description', optional 'project_id', optional 'archived'.
+                projects: Project records with 'name', optional 'description', optional 'id', optional 'archived'.
             """
             return await self._run_sync(
                 save_projects_sync,
@@ -392,7 +392,7 @@ class BinnerMCPServer:
             Batch create or update part types.
 
             Args:
-                part_types: Part type records with 'name', optional 'description', optional 'parent_part_type_id', optional 'part_type_id'.
+                part_types: Part type records with 'name', optional 'description', optional 'parent_id', optional 'id'.
             """
             return await self._run_sync(
                 save_part_types_sync,
@@ -407,14 +407,14 @@ class BinnerMCPServer:
 
         @self.mcp.tool()
         async def delete_part_types(
-            part_type_ids: Optional[List[int]] = None,
+            ids: Optional[List[int]] = None,
             names: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
             """
             Batch delete part types by ID or name.
 
             Args:
-                part_type_ids: Numeric part type IDs to delete.
+                ids: Numeric part type IDs to delete.
                 names: Part type names to delete.
             """
             return await self._run_sync(
@@ -422,7 +422,7 @@ class BinnerMCPServer:
                 self.proxy,
                 self._category_cache,
                 self._category_name_to_id,
-                part_type_ids=part_type_ids,
+                ids=ids,
                 names=names,
                 retry_delay=self.retry_delay,
                 retry_count=self.retry_count,

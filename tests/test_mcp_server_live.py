@@ -321,7 +321,7 @@ async def test_live_mcp_part_types_lifecycle(live_proxy: BinnerAPIProxy) -> None
             # 3. Delete part type via delete_part_types
             del_res = await client.call_tool(
                 "delete_part_types",
-                {"part_type_ids": [type_id]},
+                {"ids": [type_id]},
             )
             assert not del_res.is_error
             assert del_res.structured_content["result"]["status"] == "success"

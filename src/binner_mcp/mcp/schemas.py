@@ -97,7 +97,7 @@ class ProjectSaveInput(CommonBaseModel):
         None,
         description="Project name. Required when creating a new project.",
     )
-    project_id: Optional[int] = Field(
+    id: Optional[int] = Field(
         None,
         description="Numeric project ID. Required when updating an existing project without name.",
     )
@@ -120,11 +120,11 @@ class PartTypeSaveInput(CommonBaseModel):
         None,
         description="Part type / category name (e.g. 'Resistors'). Required when creating a new type.",
     )
-    part_type_id: Optional[int] = Field(
+    id: Optional[int] = Field(
         None,
-        description="Numeric part type ID. Required when updating an existing category with ambiguous name.",
+        description="Numeric category ID. Required when updating an existing category with ambiguous name.",
     )
-    parent_part_type_id: Optional[int] = Field(
+    parent_id: Optional[int] = Field(
         None,
         description="Parent category ID for hierarchical nesting (null or 0 for root categories).",
     )

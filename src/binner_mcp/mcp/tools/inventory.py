@@ -299,12 +299,11 @@ def save_parts_sync(
                 errors.append(f"Item {i}: duplicate part_number '{pn}' in batch.")
             seen_pns.add(pn_lower)
 
-            # Resolve category using overloaded part_type (or fallback part_type_id)
+            # Resolve category using overloaded part_type
             raw_pt = item.get("part_type")
-            raw_ptid = item.get("part_type_id")
-            if raw_pt is not None or raw_ptid is not None:
+            if raw_pt is not None:
                 resolved_id, resolved_path, pt_err = resolve_part_category_input(
-                    raw_pt, raw_ptid, category_resolver
+                    raw_pt, category_resolver
                 )
                 if pt_err:
                     errors.append(f"Item {i} ('{pn}'): {pt_err}")

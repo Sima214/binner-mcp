@@ -85,28 +85,18 @@ def validate_non_negative_number(
 
 def resolve_part_category_input(
     raw_pt: Any,
-    raw_ptid: Any,
     resolver: CategoryResolver,
 ) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     """
     Resolve category assignment for inventory parts.
 
-    Prefers the overloaded 'part_type' parameter (accepting category path strings,
-    leaf names, or numeric IDs). Accepts 'part_type_id' as a fallback when 'part_type'
-    is omitted.
+    Uses the overloaded 'part_type' parameter (accepting category path strings,
+    leaf names, or numeric IDs).
 
     Returns:
         (resolved_id, resolved_path, error_str)
     """
     if raw_pt is not None:
         return resolver.resolve(raw_pt)
-
-    if raw_ptid is not None:
-        ptid, err = parse_int_id(raw_ptid, "part_type_id")
-        if err:
-            return None, None, err
-        if ptid not in resolver.path_by_id:
-            return None, None, f"Part type ID {ptid} does not exist in inventory."
-        return ptid, resolver.path_by_id.get(ptid), None
 
     return None, None, None

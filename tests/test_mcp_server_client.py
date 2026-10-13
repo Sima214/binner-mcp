@@ -888,7 +888,7 @@ async def test_save_and_delete_part_types(mock_proxy: MagicMock, mock_swarm: Mag
         # Delete
         del_res = await client.call_tool(
             "delete_part_types",
-            {"part_type_ids": [10]},
+            {"ids": [10]},
         )
         assert not del_res.is_error
         del_data = del_res.structured_content["result"]
@@ -1034,7 +1034,7 @@ async def test_save_projects_invalid_project_detected_no_retry(
             {
                 "projects": [
                     {"name": "Valid-Project-1", "description": "Good"},
-                    {"project_id": 99999999, "description": "Non-existent project"},
+                    {"id": 99999999, "description": "Non-existent project"},
                 ]
             },
         )
@@ -1277,8 +1277,8 @@ async def test_save_and_delete_part_types_validation_failures(
         assert not res.is_error
         assert res.structured_content["result"]["status"] == "error"
 
-        # save_part_types: non-existent part_type_id
-        res = await client.call_tool("save_part_types", {"part_types": [{"part_type_id": 999999}]})
+        # save_part_types: non-existent id
+        res = await client.call_tool("save_part_types", {"part_types": [{"id": 999999}]})
         assert not res.is_error
         data = res.structured_content["result"]
         assert data["status"] == "error"
@@ -1397,7 +1397,7 @@ async def test_ambiguous_part_types_rejected_across_tools(
         assert data["error"] == "Ambiguous root part type name"
         assert any("Matches 2 categories" in d for d in data["details"])
 
-        # --- 9. save_part_types: Rejection of ambiguous name update without part_type_id ---
+        # --- 9. save_part_types: Rejection of ambiguous name update without id ---
         res = await client.call_tool(
             "save_part_types",
             {"part_types": [{"name": "SMD", "description": "Updated SMD"}]},
@@ -1406,6 +1406,7 @@ async def test_ambiguous_part_types_rejected_across_tools(
         data = res.structured_content["result"]
         assert data["status"] == "error"
         assert any("part type name is ambiguous" in d for d in data["details"])
+        assert any("Please specify 'id' to update" in d for d in data["details"])
         mock_proxy.update_part_type.assert_not_called()
         mock_proxy.create_part_type.assert_not_called()
 
@@ -1511,11 +1512,25 @@ async def test_mcp_sdk_tool_schemas_published(mock_proxy: MagicMock, mock_swarm:
     assert save_projects_tool is not None
     proj_params = save_projects_tool.parameters
     assert "ProjectSaveInput" in proj_params["$defs"]
+    proj_props = proj_params["$defs"]["ProjectSaveInput"]["properties"]
+    assert "id" in proj_props
+    assert "project_id" not in proj_props
 
     save_part_types_tool = server.mcp._tool_manager.get_tool("save_part_types")
     assert save_part_types_tool is not None
     pt_params = save_part_types_tool.parameters
     assert "PartTypeSaveInput" in pt_params["$defs"]
+    pt_props = pt_params["$defs"]["PartTypeSaveInput"]["properties"]
+    assert "id" in pt_props
+    assert "parent_id" in pt_props
+    assert "part_type_id" not in pt_props
+    assert "parent_part_type_id" not in pt_props
+
+    delete_part_types_tool = server.mcp._tool_manager.get_tool("delete_part_types")
+    assert delete_part_types_tool is not None
+    del_pt_props = delete_part_types_tool.parameters["properties"]
+    assert "ids" in del_pt_props
+    assert "part_type_ids" not in del_pt_props
 
     manage_bom_tool = server.mcp._tool_manager.get_tool("manage_bom_parts")
     assert manage_bom_tool is not None
@@ -1547,11 +1562,35 @@ async def test_unknown_fields_and_arguments_rejected(mock_proxy: MagicMock, mock
         assert "Extra inputs are not permitted" in res.content[0].text
         assert "projects.0.invalid_key" in res.content[0].text
 
+        # 3b. Legacy project_id rejected in ProjectSaveInput
+        res = await client.call_tool("save_projects", {"projects": [{"name": "Proj", "project_id": 5}]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "projects.0.project_id" in res.content[0].text
+
         # 4. Unknown field in PartTypeSaveInput
         res = await client.call_tool("save_part_types", {"part_types": [{"name": "Type", "bad_attr": "val"}]})
         assert res.is_error
         assert "Extra inputs are not permitted" in res.content[0].text
         assert "part_types.0.bad_attr" in res.content[0].text
+
+        # 4b. Legacy part_type_id rejected in PartTypeSaveInput
+        res = await client.call_tool("save_part_types", {"part_types": [{"name": "Type", "part_type_id": 10}]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "part_types.0.part_type_id" in res.content[0].text
+
+        # 4c. Legacy parent_part_type_id rejected in PartTypeSaveInput
+        res = await client.call_tool("save_part_types", {"part_types": [{"name": "Type", "parent_part_type_id": 10}]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "part_types.0.parent_part_type_id" in res.content[0].text
+
+        # 4d. Legacy part_type_ids rejected in delete_part_types
+        res = await client.call_tool("delete_part_types", {"part_type_ids": [10]})
+        assert res.is_error
+        assert "Extra inputs are not permitted" in res.content[0].text
+        assert "part_type_ids" in res.content[0].text
 
         # 5. Unknown field in BomPartInput
         res = await client.call_tool("manage_bom_parts", {"project_id": 1, "parts": [{"part_number": "R1", "extra": 1}]})
