@@ -26,10 +26,6 @@ class PartSaveInput(CommonBaseModel):
             "leaf category name, or numeric part type ID."
         ),
     )
-    part_type_id: Optional[Union[int, str]] = Field(
-        None,
-        description="Optional numeric category ID (accepted as fallback if 'part_type' is omitted).",
-    )
     quantity: Optional[Union[int, str]] = Field(
         None,
         description="Absolute physical units in stock (>= 0).",

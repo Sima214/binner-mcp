@@ -248,7 +248,15 @@ async def test_list_parts_field_expansion(mock_proxy: MagicMock, mock_swarm: Mag
         totalPages=1,
         pageNumber=1,
         items=[
-            PartResponse(partId=10, partNumber="ESP32-WROOM-32", quantity=15, location="Drawer 1", binNumber="C4"),
+            PartResponse(
+                partId=10,
+                partNumber="ESP32-WROOM-32",
+                quantity=15,
+                location="Drawer 1",
+                binNumber="C4",
+                binNumber2="BAG-01",
+                productUrl="https://supplier.example/esp32",
+            ),
         ],
     )
     server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
@@ -256,7 +264,12 @@ async def test_list_parts_field_expansion(mock_proxy: MagicMock, mock_swarm: Mag
     async with Client(server.mcp, raise_exceptions=True) as client:
         result = await client.call_tool(
             "list_parts",
-            {"fields": ["quantity", "location", "bin_number"]},
+            {
+                "bin_number": "C4",
+                "bin_number2": "BAG-01",
+                "part_type": 101,
+                "fields": ["quantity", "location", "bin_number", "bin_number2", "product_url"],
+            },
         )
         assert not result.is_error
         data = result.structured_content["result"]
@@ -267,6 +280,14 @@ async def test_list_parts_field_expansion(mock_proxy: MagicMock, mock_swarm: Mag
         assert part["quantity"] == 15
         assert part["location"] == "Drawer 1"
         assert part["bin_number"] == "C4"
+        assert part["bin_number2"] == "BAG-01"
+        assert part["product_url"] == "https://supplier.example/esp32"
+
+        # Verify proxy called with bin_number2 and part_type
+        mock_proxy.list_parts.assert_called_once()
+        call_kwargs = mock_proxy.list_parts.call_args[1]
+        assert call_kwargs["bin_number"] == "C4"
+        assert call_kwargs["bin_number2"] == "BAG-01"
 
 
 @pytest.mark.anyio
@@ -385,14 +406,26 @@ async def test_save_parts_batch_upsert(mock_proxy: MagicMock, mock_swarm: MagicM
     mock_proxy.create_part.return_value = created_stm32
     mock_proxy.update_part.return_value = updated_lm358
 
+    mock_proxy.get_part_types.return_value = [
+        PartTypeResponse(partTypeId=101, name="Resistors", parentPartTypeId=None),
+    ]
     server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
+    server._category_cache[101] = "Passives::Resistors"
 
     async with Client(server.mcp, raise_exceptions=True) as client:
         result = await client.call_tool(
             "save_parts",
             {
                 "parts": [
-                    {"part_number": "STM32F401RET6", "quantity": 5, "bin_number": "C2-10", "location": "MCU Drawer"},
+                    {
+                        "part_number": "STM32F401RET6",
+                        "quantity": 5,
+                        "bin_number": "C2-10",
+                        "bin_number2": "BAG-02",
+                        "location": "MCU Drawer",
+                        "product_url": "https://supplier.example/stm32",
+                        "part_type": 101,
+                    },
                     {"part_number": "LM358N", "quantity": 35, "bin_number": "B2-15"},
                 ]
             },
@@ -404,6 +437,11 @@ async def test_save_parts_batch_upsert(mock_proxy: MagicMock, mock_swarm: MagicM
         assert data["created_count"] == 1
         assert data["updated_count"] == 1
         assert data["created"][0]["part_number"] == "STM32F401RET6"
+
+        create_kwargs = mock_proxy.create_part.call_args[0][0]
+        assert create_kwargs["part_type_id"] == "101"
+        assert create_kwargs["bin_number2"] == "BAG-02"
+        assert create_kwargs["product_url"] == "https://supplier.example/stm32"
 
         updated = data["updated"][0]
         assert updated["part_number"] == "LM358N"
@@ -1280,19 +1318,7 @@ async def test_ambiguous_part_types_rejected_across_tools(
     server = BinnerMCPServer(proxy=mock_proxy, swarm=mock_swarm)
 
     async with Client(server.mcp, raise_exceptions=True) as client:
-        # --- 1. save_parts: Rejection of non-existent part_type_id ---
-        res = await client.call_tool(
-            "save_parts",
-            {"parts": [{"part_number": "R1", "part_type_id": 999999}]},
-        )
-        assert not res.is_error
-        data = res.structured_content["result"]
-        assert data["status"] == "error"
-        assert "Validation failed" in data["error"]
-        assert any("Part type ID 999999 does not exist" in d for d in data["details"])
-        mock_proxy.create_part.assert_not_called()
-
-        # --- 2. save_parts: Rejection of ambiguous leaf name 'SMD' ---
+        # --- 1. save_parts: Rejection of ambiguous leaf name 'SMD' ---
         res = await client.call_tool(
             "save_parts",
             {"parts": [{"part_number": "R1", "part_type": "SMD"}]},
@@ -1454,14 +1480,14 @@ async def test_overloaded_part_type_acceptance(
         assert res4.structured_content["result"]["status"] == "success"
         assert res4.structured_content["result"]["created_count"] == 1
 
-        # 5. Fallback numeric part_type_id (3) when part_type is omitted
+        # 5. part_type_id rejected as forbidden unknown argument
         res5 = await client.call_tool(
             "save_parts",
             {"parts": [{"part_number": "R_FALLBACK_ID", "part_type_id": 3}]},
         )
-        assert not res5.is_error
-        assert res5.structured_content["result"]["status"] == "success"
-        assert res5.structured_content["result"]["created_count"] == 1
+        assert res5.is_error
+        assert "Extra inputs are not permitted" in res5.content[0].text
+        assert "parts.0.part_type_id" in res5.content[0].text
 
 
 @pytest.mark.anyio

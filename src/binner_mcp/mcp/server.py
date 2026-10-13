@@ -4,7 +4,7 @@ import asyncio
 import concurrent.futures
 import functools
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import requests
 
@@ -125,8 +125,9 @@ class BinnerMCPServer:
         @self.mcp.tool()
         async def list_parts(
             query: Optional[str] = None,
-            part_type: Optional[str] = None,
+            part_type: Optional[Union[str, int]] = None,
             bin_number: Optional[str] = None,
+            bin_number2: Optional[str] = None,
             location: Optional[str] = None,
             package_type: Optional[str] = None,
             manufacturer: Optional[str] = None,
@@ -142,13 +143,14 @@ class BinnerMCPServer:
 
             Args:
                 query: Search keyword across part numbers and descriptions.
-                part_type: Filter by category name or path.
+                part_type: Filter by category name/path or numeric part type ID.
                 bin_number: Filter by storage bin.
+                bin_number2: Filter by secondary storage bin or sub-compartment bag/label.
                 location: Filter by room or cabinet.
                 package_type: Filter by footprint/package (e.g. '0805', 'SOIC-8').
                 manufacturer: Filter by manufacturer name.
                 low_stock_only: Return only parts at or below threshold.
-                fields: Extra fields to return (e.g. ['quantity', 'location', 'bin_number']).
+                fields: Extra fields to return (e.g. ['quantity', 'location', 'bin_number', 'bin_number2', 'product_url']).
                 page: Page number (1-based).
                 limit: Max results per page (1-500).
                 sort_by: Column to sort by (default 'DateCreatedUtc').
@@ -160,6 +162,7 @@ class BinnerMCPServer:
                 query=query,
                 part_type=part_type,
                 bin_number=bin_number,
+                bin_number2=bin_number2,
                 location=location,
                 package_type=package_type,
                 manufacturer=manufacturer,

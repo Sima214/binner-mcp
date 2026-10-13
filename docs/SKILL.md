@@ -51,7 +51,7 @@ flowchart TD
 | Tool | Primary Parameters | Description |
 | :--- | :--- | :--- |
 | `get_system_status` | `check_cloud: bool = False` | Probe Binner connectivity, version, identity, and inventory statistics. |
-| `list_parts` | `query`, `part_type`, `bin_number`, `location`, `package_type`, `manufacturer`, `low_stock_only`, `fields`, `page`, `limit`, `sort_by`, `direction` | Paginated component search with metadata filtering and field projection. |
+| `list_parts` | `query`, `part_type`, `bin_number`, `bin_number2`, `location`, `package_type`, `manufacturer`, `low_stock_only`, `fields`, `page`, `limit`, `sort_by`, `direction` | Paginated component search with metadata filtering and field projection. |
 | `get_parts` | `part_numbers: str[]`, `part_ids: int[]`, `fields: str[]` | Batch component inspection returning details, bin locations, and datasheets. |
 | `save_parts` | `parts: PartSaveInput[]` | Batch create or update components with strict pre-flight validation. |
 | `delete_parts` | `part_numbers: str[]`, `part_ids: int[]` | Batch component deletion by part number or ID. |
@@ -80,7 +80,6 @@ Component record for batch inventory creation and updates.
 | :--- | :--- | :--- | :--- |
 | `part_number` | `string` | **Required** | Unique component identifier / Manufacturer Part Number (MPN). Non-empty. |
 | `part_type` | `string` \| `int` | `None` | Overloaded category identifier: hierarchy path (e.g. `"Passives::Resistors::SMD"`), leaf name (e.g. `"SMD"`), or numeric ID (`10` or `"10"`). |
-| `part_type_id` | `int` \| `string` | `None` | Optional numeric category ID (accepted as fallback if `part_type` is omitted). |
 | `quantity` | `int` \| `string` | `0` | Absolute count of physical units in stock ($\ge 0$). |
 | `low_stock_threshold` | `int` \| `string` | `0` | Reorder alert threshold ($\ge 0$). |
 | `cost` | `float` \| `string` | `0.0` | Unit purchase cost ($\ge 0.0$). |
@@ -199,8 +198,8 @@ Delivered by `get_projects(include_bom=True)`:
    - If stock is insufficient for any item, execution aborts, returns a shortage breakdown matrix, and leaves inventory untouched.
 
 5. **Category Hierarchy Resolution & Ambiguity Safety:**
-   - `part_type` accepts leaf names (`"SMD"`) or delimited paths (`"Passives::Resistors::SMD"`).
-   - If a leaf name matches multiple categories, the mutation is rejected with candidate suggestions until disambiguated with a full path or numeric `part_type_id`.
+   - `part_type` accepts leaf names (`"SMD"`), delimited paths (`"Passives::Resistors::SMD"`), or numeric IDs (`10` or `"10"`).
+   - If a leaf name matches multiple categories, the mutation is rejected with candidate suggestions until disambiguated with a full path or numeric `part_type`.
    - Missing parent nodes in valid path strings are created automatically.
 
 6. **Batch Mutation Fault Tolerance (Retry-Then-Report, Never Rollback):**

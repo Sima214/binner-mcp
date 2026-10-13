@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 import requests
 
 from binner_mcp.api.client import BinnerAPIProxy
@@ -24,8 +24,9 @@ logger = logging.getLogger("binner_mcp.mcp.tools.inventory")
 def list_parts_sync(
     proxy: BinnerAPIProxy,
     query: Optional[str] = None,
-    part_type: Optional[str] = None,
+    part_type: Optional[Union[str, int]] = None,
     bin_number: Optional[str] = None,
+    bin_number2: Optional[str] = None,
     location: Optional[str] = None,
     package_type: Optional[str] = None,
     manufacturer: Optional[str] = None,
@@ -47,7 +48,7 @@ def list_parts_sync(
     field_set = set(fields) if fields else set()
 
     target_part_type_id: Optional[int] = None
-    target_part_type_str: Optional[str] = part_type
+    target_part_type_str: Optional[str] = str(part_type) if part_type is not None else None
     if part_type is not None and category_resolver is not None:
         if not category_resolver.path_by_id:
             category_resolver.warm_cache(proxy)
@@ -77,6 +78,7 @@ def list_parts_sync(
                 part_type=target_part_type_str,
                 part_type_id=target_part_type_id,
                 bin_number=bin_number,
+                bin_number2=bin_number2,
                 location=location,
                 manufacturer=manufacturer,
                 package_type=package_type,
@@ -91,6 +93,7 @@ def list_parts_sync(
                 part_type=target_part_type_str,
                 part_type_id=target_part_type_id,
                 bin_number=bin_number,
+                bin_number2=bin_number2,
                 location=location,
                 manufacturer=manufacturer,
                 package_type=package_type,
@@ -128,6 +131,8 @@ def list_parts_sync(
                 part_dict["manufacturer_part_number"] = item.manufacturer_part_number
             if "datasheet_url" in field_set:
                 part_dict["datasheet_url"] = item.datasheet_url
+            if "product_url" in field_set:
+                part_dict["product_url"] = item.product_url
 
             formatted_parts.append(compact_payload(part_dict))
 
@@ -416,6 +421,7 @@ def save_parts_sync(
                             "manufacturer": item.get("manufacturer"),
                             "manufacturer_part_number": item.get("manufacturer_part_number"),
                             "datasheet_url": item.get("datasheet_url"),
+                            "product_url": item.get("product_url"),
                             "part_type_id": part_type_id,
                         }
                         created_part = proxy.create_part(create_req)
@@ -429,11 +435,13 @@ def save_parts_sync(
                             "initial_values": compact_payload({
                                 "quantity": created_part.quantity,
                                 "bin_number": created_part.bin_number,
+                                "bin_number2": created_part.bin_number2,
                                 "location": created_part.location,
                                 "package_type": created_part.package_type,
                                 "cost": created_part.cost,
                                 "currency": created_part.currency,
                                 "part_type": cat_desc,
+                                "product_url": created_part.product_url,
                             }),
                         })
                     else:
@@ -451,6 +459,7 @@ def save_parts_sync(
                             "manufacturer": existing.manufacturer,
                             "manufacturer_part_number": existing.manufacturer_part_number,
                             "datasheet_url": existing.datasheet_url,
+                            "product_url": existing.product_url,
                             "part_type": category_cache.get(existing.part_type_id, existing.part_type),
                         }
 
@@ -469,6 +478,7 @@ def save_parts_sync(
                             "manufacturer": item["manufacturer"] if "manufacturer" in item else existing.manufacturer,
                             "manufacturer_part_number": item["manufacturer_part_number"] if "manufacturer_part_number" in item else existing.manufacturer_part_number,
                             "datasheet_url": item["datasheet_url"] if "datasheet_url" in item else existing.datasheet_url,
+                            "product_url": item["product_url"] if "product_url" in item else existing.product_url,
                             "part_type_id": part_type_id if (i in preflight_category_resolved) else (str(existing.part_type_id) if existing.part_type_id else None),
                         }
                         updated_part = proxy.update_part(update_req)
@@ -485,6 +495,7 @@ def save_parts_sync(
                             "manufacturer": updated_part.manufacturer,
                             "manufacturer_part_number": updated_part.manufacturer_part_number,
                             "datasheet_url": updated_part.datasheet_url,
+                            "product_url": updated_part.product_url,
                             "part_type": category_cache.get(updated_part.part_type_id, updated_part.part_type),
                         }
 
